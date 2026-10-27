@@ -61,6 +61,15 @@ def descendants(node):
         yield from descendants(child)
 
 
+def view_selectors(nodes):
+    """Capture top-level inheritance locators, including the optional data wrapper."""
+    for node in nodes:
+        if node.tag == "data":
+            yield from view_selectors(node.children)
+        else:
+            yield {"line": node.line, "tag": node.tag, "attributes": dict(node.attrs)}
+
+
 def call_name(node):
     if isinstance(node, ast.Name):
         return node.id
@@ -78,6 +87,8 @@ class SourceIndex:
         self.records = []
         self.references = []
         self.usages = []
+        self.view_xpaths = {}
+        self.view_specs = {}
         self.errors = []
         self.modules = []
 
@@ -106,6 +117,8 @@ class SourceIndex:
         if not force and fingerprint == self.fingerprint:
             return False
         self.classes, self.records, self.references, self.usages, self.errors = [], [], [], [], []
+        self.view_xpaths = {}
+        self.view_specs = {}
         self.modules = []
         for module, manifest in modules:
             try:
@@ -180,19 +193,34 @@ class SourceIndex:
         nodes = [n for root in handler.roots for n in [root, *descendants(root)]]
         for node in nodes:
             loc = {"module": module, "path": str(path), "line": node.line}
-            if node.tag in {"record", "menuitem"} and node.attrs.get("id"):
+            if node.tag in {"record", "menuitem", "template"} and node.attrs.get("id"):
                 raw_id = node.attrs["id"]
-                record = {**loc, "xml_id": qualified(module, raw_id), "kind": node.attrs.get("model", "ir.ui.menu" if node.tag == "menuitem" else ""), "fields": {}}
-                if node.tag == "menuitem":
+                kind = "ir.ui.menu" if node.tag == "menuitem" else "ir.ui.view" if node.tag == "template" else node.attrs.get("model", "")
+                record = {**loc, "xml_id": qualified(module, raw_id), "kind": kind, "fields": {}}
+                if node.tag in {"menuitem", "template"}:
                     record["fields"] = dict(node.attrs)
                 else:
                     for child in node.children:
                         if child.tag == "field" and child.attrs.get("name"):
                             value = child.attrs.get("ref") or child.text.strip()
+                            if not value and child.attrs["name"] in {"priority", "sequence"} and child.attrs.get("eval"):
+                                try:
+                                    number = literal(ast.parse(child.attrs["eval"], mode="eval").body)
+                                    if isinstance(number, int) and not isinstance(number, bool):
+                                        value = str(number)
+                                except SyntaxError:
+                                    pass
                             record["fields"][child.attrs["name"]] = value
                 self.records.append(record)
                 if record["kind"] == "ir.ui.view":
                     model = record["fields"].get("model") or None
+                    self.view_xpaths[(str(path), node.line)] = [
+                        {"line": child.line, "expr": child.attrs.get("expr"), "position": child.attrs.get("position")}
+                        for child in descendants(node) if child.tag == "xpath"]
+                    arches = [child for child in node.children if child.tag == "field" and child.attrs.get("name") == "arch"]
+                    selector_nodes = node.children if node.tag == "template" else [child for arch in arches for child in arch.children]
+                    if record["fields"].get("inherit_id"):
+                        self.view_specs[(str(path), node.line)] = list(view_selectors(selector_nodes))
                     for child in descendants(node):
                         if child.tag == "field" and child.attrs.get("name") and child not in node.children:
                             self.usages.append({**loc, "line": child.line, "view": record["xml_id"], "model": model, "field": child.attrs["name"],
@@ -224,6 +252,102 @@ class SourceIndex:
                                   "fields_truncated": fields["truncated"], "methods": methods["items"],
                                   "methods_total": methods["total"], "methods_truncated": methods["truncated"]}
         return result
+
+    def trace_model(self, name, limit=50):
+        limit = max(1, min(limit, 100))
+        queue, seen, nodes, edges = [name], set(), [], []
+        while queue and len(seen) < limit:
+            model = queue.pop(0)
+            if model in seen:
+                continue
+            seen.add(model)
+            classes = [c for c in self.classes if model in c["models"]]
+            definitions = [{k: c[k] for k in ("module", "path", "line", "class", "models", "inherit", "delegates")}
+                           for c in classes]
+            nodes.append({"model": model, "definitions": self.limit(definitions, limit)})
+            for cls in classes:
+                relations = [(parent, "inherit", None) for parent in cls["inherit"] if parent != model]
+                relations += [(parent, "delegation", field) for parent, field in cls["delegates"].items()
+                              if isinstance(parent, str)]
+                for parent, kind, field in relations:
+                    edges.append({"model": model, "parent": parent, "kind": kind, "field": field,
+                                  "module": cls["module"], "path": cls["path"], "line": cls["line"]})
+                    if parent not in seen:
+                        queue.append(parent)
+        derived = [{"model": model, "parent": name, "kind": kind, "field": field,
+                    "module": c["module"], "path": c["path"], "line": c["line"]}
+                   for c in self.classes for model in c["models"] if model != name
+                   for parent, kind, field in ([(p, "inherit", None) for p in c["inherit"]] +
+                                                [(p, "delegation", f) for p, f in c["delegates"].items()])
+                   if parent == name]
+        return {"model": name, "nodes": self.limit(nodes, limit), "relations": self.limit(edges, limit),
+                "direct_descendants": self.limit(derived, limit), "traversal_truncated": any(n not in seen for n in queue),
+                "note": "Static candidates only. Ancestors are followed; descendants are direct only. Cycles, missing source, dynamic declarations and Odoo load order require inspection."}
+
+    def find_method(self, model, name, limit=50):
+        items = [{**{k: c[k] for k in ("module", "path", "class", "models", "inherit", "delegates")}, **method}
+                 for c in self.classes if model in c["models"] for method in c["methods"] if method["name"] == name]
+        return {"model": model, "method": name, "definitions": self.limit(items, limit),
+                "note": "Direct definitions and extension candidates only; Python/Odoo method resolution and installed modules are not resolved."}
+
+    def trace_view(self, identifier, limit=50):
+        limit = max(1, min(limit, 100))
+        views = [r for r in self.records if r["kind"] == "ir.ui.view"]
+        matches = [r for r in views if r["xml_id"] == identifier or
+                   ("." not in identifier and r["xml_id"].rsplit(".", 1)[-1] == identifier)]
+        by_id = {}
+        children = {}
+        for view in views:
+            by_id.setdefault(view["xml_id"], []).append(view)
+            parent = qualified(view["module"], view["fields"].get("inherit_id"))
+            if parent:
+                children.setdefault(parent, []).append(view["xml_id"])
+        queue = list(dict.fromkeys(r["xml_id"] for r in matches))
+        seen, records, edges, unresolved = set(), [], [], []
+        while queue and len(seen) < limit:
+            current = queue.pop(0)
+            if current in seen:
+                continue
+            seen.add(current)
+            candidates = by_id.get(current, [])
+            if not candidates:
+                unresolved.append(current)
+            for view in candidates:
+                xpaths = self.limit(self.view_xpaths.get((view["path"], view["line"]), []), limit)
+                selectors = self.limit(self.view_specs.get((view["path"], view["line"]), []), limit)
+                records.append({**view, "xpaths": xpaths, "selectors": selectors})
+                parent = qualified(view["module"], view["fields"].get("inherit_id"))
+                if parent:
+                    edges.append({"view": current, "parent": parent, "module": view["module"],
+                                  "path": view["path"], "line": view["line"]})
+                    if parent not in seen:
+                        queue.append(parent)
+            queue.extend(child for child in children.get(current, []) if child not in seen)
+        return {"query": identifier, "matches": self.limit([r["xml_id"] for r in matches], limit),
+                "views": self.limit(records, limit), "relations": self.limit(edges, limit),
+                "unresolved": self.limit(unresolved, limit), "traversal_truncated": any(n not in seen for n in queue),
+                "note": "Static inheritance candidates and source locators; dynamic references and effective Odoo view order are not resolved."}
+
+    def trace_action(self, identifier, limit=50):
+        def matches(xml_id):
+            return xml_id == identifier or ("." not in identifier and xml_id.rsplit(".", 1)[-1] == identifier)
+
+        actions = [r for r in self.records if r["kind"].startswith("ir.actions.") and
+                   r["kind"] != "ir.actions.act_window.view" and matches(r["xml_id"])]
+        action_ids = {r["xml_id"] for r in actions}
+        models = {r["fields"].get("res_model") for r in actions if r["fields"].get("res_model")}
+        menus = [r for r in self.records if r["kind"] == "ir.ui.menu" and
+                 qualified(r["module"], r["fields"].get("action")) in action_ids]
+        view_links = [r for r in self.records if r["kind"] == "ir.actions.act_window.view" and
+                      qualified(r["module"], r["fields"].get("act_window_id")) in action_ids]
+        view_ids = {qualified(r["module"], r["fields"].get(key)) for r in actions for key in ("view_id", "search_view_id")}
+        view_ids.update(qualified(r["module"], r["fields"].get("view_id")) for r in view_links)
+        views = [r for r in self.records if r["kind"] == "ir.ui.view" and
+                 (r["xml_id"] in view_ids or r["fields"].get("model") in models)]
+        return {"query": identifier, "actions": self.limit(actions, limit), "menus": self.limit(menus, limit),
+                "action_view_links": self.limit(view_links, limit),
+                "model_candidates": self.limit(sorted(models), limit), "view_candidates": self.limit(views, limit),
+                "note": "Static action-view records, direct references and model-matched views are candidates; dynamic action view lists and effective views may differ."}
 
     def field(self, model, name, limit=50):
         definitions = [{**{k: c[k] for k in ("module", "path", "class", "models")}, **f} for c in self.classes if model in c["models"] for f in c["fields"] if f["name"] == name]

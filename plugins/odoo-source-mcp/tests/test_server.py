@@ -19,7 +19,12 @@ class MCPWorkspaceTests(unittest.IsolatedAsyncioTestCase):
                 module.mkdir(parents=True)
                 (base / project / ".git").mkdir()
                 (module / "__manifest__.py").write_text("{}")
-                (module / "model.py").write_text(f'class A:\n    _name = "{project}.model"\n')
+                (module / "model.py").write_text(f'class A:\n    _name = "{project}.model"\n    def open(self): pass\n')
+                (module / "views.xml").write_text(f'''<odoo>
+<record id="view" model="ir.ui.view"><field name="model">{project}.model</field></record>
+<record id="action" model="ir.actions.act_window"><field name="res_model">{project}.model</field></record>
+<menuitem id="menu" action="action"/>
+</odoo>''')
 
             async def roots(context):
                 return ListRootsResult(roots=[Root(uri=(base / "one").as_uri())])
@@ -29,7 +34,8 @@ class MCPWorkspaceTests(unittest.IsolatedAsyncioTestCase):
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write, list_roots_callback=roots) as session:
                     await session.initialize()
-                    await session.list_tools()
+                    listed = await session.list_tools()
+                    self.assertTrue({"trace_model", "trace_view", "find_method", "trace_action"}.issubset({tool.name for tool in listed.tools}))
                     for model, workspace, expected in (("one.model", None, 1), ("two.model", str(base / "two"), 1), ("one.model", str(base / "two"), 0)):
                         args = {"model": model}
                         if workspace:
@@ -38,6 +44,14 @@ class MCPWorkspaceTests(unittest.IsolatedAsyncioTestCase):
                         self.assertFalse(response.isError)
                         data = response.structuredContent or json.loads(response.content[0].text)
                         self.assertEqual(data["total"], expected)
+                    for tool, args, collection in (("trace_model", {"model": "one.model"}, "nodes"),
+                                                   ("trace_view", {"xml_id": "one.view"}, "views"),
+                                                   ("find_method", {"model": "one.model", "method": "open"}, "definitions"),
+                                                   ("trace_action", {"xml_id": "one.action"}, "menus")):
+                        response = await session.call_tool(tool, {**args, "workspace": str(base / "one")})
+                        self.assertFalse(response.isError, tool)
+                        data = response.structuredContent or json.loads(response.content[0].text)
+                        self.assertEqual(data[collection]["total"], 1, tool)
 
     async def test_missing_workspace_returns_clear_error(self):
         env = {key: value for key, value in os.environ.items() if key not in ("ODOO_ADDONS_PATH", "ODOO_SOURCE_ROOT")}

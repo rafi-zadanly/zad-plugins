@@ -93,6 +93,38 @@ async def find_xml_id(xml_id: str, workspace: str | None = None, limit: int = 50
     return index.xml_id(xml_id, limit)
 
 
+@mcp.tool()
+async def trace_model(model: str, workspace: str | None = None, limit: int = 50) -> dict:
+    """Trace static model inheritance, delegation and direct descendant candidates."""
+    index = await get_index(workspace)
+    index.refresh()
+    return index.trace_model(model, limit)
+
+
+@mcp.tool()
+async def trace_view(xml_id: str, workspace: str | None = None, limit: int = 50) -> dict:
+    """Trace static view/template inheritance and source selectors by XML ID."""
+    index = await get_index(workspace)
+    index.refresh()
+    return index.trace_view(xml_id, limit)
+
+
+@mcp.tool()
+async def find_method(model: str, method: str, workspace: str | None = None, limit: int = 50) -> dict:
+    """Find direct definitions and extension candidates for a method on a model."""
+    index = await get_index(workspace)
+    index.refresh()
+    return index.find_method(model, method, limit)
+
+
+@mcp.tool()
+async def trace_action(xml_id: str, workspace: str | None = None, limit: int = 50) -> dict:
+    """Trace an action XML ID to candidate menus, models and views."""
+    index = await get_index(workspace)
+    index.refresh()
+    return index.trace_action(xml_id, limit)
+
+
 def main():
     mcp.run(transport="stdio")
 

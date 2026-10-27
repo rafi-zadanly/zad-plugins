@@ -98,6 +98,117 @@ class Derived(models.Model):
         self.assertEqual(self.index.model("linked.model")["total"], 0)
         self.assertEqual(self.index.status()["modules"], 1)
 
+    def test_trace_model_inheritance_delegation_and_cycles(self):
+        (self.module / "lineage.py").write_text('''
+class Delegated:
+    _name = "demo.delegated"
+    _inherits = {"demo.thing": "thing_id"}
+class Grandchild:
+    _name = "demo.grandchild"
+    _inherit = "demo.derived"
+class CycleA:
+    _name = "demo.a"
+    _inherit = "demo.b"
+class CycleB:
+    _name = "demo.b"
+    _inherit = "demo.a"
+''')
+        self.index.refresh()
+        trace = self.index.trace_model("demo.grandchild")
+        self.assertEqual([n["model"] for n in trace["nodes"]["items"]], ["demo.grandchild", "demo.derived", "demo.thing"])
+        self.assertEqual([n["class"] for n in trace["nodes"]["items"][-1]["definitions"]["items"]], ["Thing", "Extended"])
+        descendants = self.index.trace_model("demo.thing")["direct_descendants"]["items"]
+        self.assertIn(("demo.delegated", "delegation", "thing_id"), [(d["model"], d["kind"], d["field"]) for d in descendants])
+        limited = self.index.trace_model("demo.grandchild", 1)
+        self.assertTrue(limited["traversal_truncated"])
+        cycle = self.index.trace_model("demo.a")
+        self.assertEqual(len(cycle["nodes"]["items"]), 2)
+        self.assertFalse(cycle["traversal_truncated"])
+
+    def test_find_method_direct_overrides_and_limits(self):
+        (self.module / "overrides.py").write_text('''
+class Extension:
+    _inherit = "demo.thing"
+    def action_open(self): pass
+class Unrelated:
+    _name = "other.model"
+    def action_open(self): pass
+''')
+        self.index.refresh()
+        result = self.index.find_method("demo.thing", "action_open", 1)["definitions"]
+        self.assertEqual(result["total"], 2)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["items"][0]["class"], "Thing")
+        self.assertEqual(self.index.find_method("demo.thing", "missing")["definitions"]["total"], 0)
+
+    def test_trace_view_inheritance_xpath_and_unresolved_parent(self):
+        (self.module / "inherited.xml").write_text('''<odoo>
+<record id="extension" model="ir.ui.view">
+  <field name="model">demo.thing</field>
+  <field name="inherit_id" ref="thing_form"/>
+  <field name="arch" type="xml"><xpath expr="//field[@name='partner_id']" position="after"><field name="line_ids"/></xpath></field>
+</record>
+<record id="child" model="ir.ui.view"><field name="inherit_id" ref="extension"/></record>
+<record id="orphan" model="ir.ui.view"><field name="inherit_id" ref="missing.view"/></record>
+</odoo>''')
+        self.index.refresh()
+        trace = self.index.trace_view("demo.extension")
+        self.assertEqual({v["xml_id"] for v in trace["views"]["items"]}, {"demo.thing_form", "demo.extension", "demo.child"})
+        extension = next(v for v in trace["views"]["items"] if v["xml_id"] == "demo.extension")
+        self.assertEqual(extension["xpaths"]["items"][0], {"line": 5, "expr": "//field[@name='partner_id']", "position": "after"})
+        self.assertEqual(self.index.trace_view("demo.orphan")["unresolved"]["items"], ["missing.view"])
+        self.assertTrue(self.index.trace_view("demo.extension", 1)["traversal_truncated"])
+        self.assertEqual(self.index.trace_view("unknown")["matches"]["total"], 0)
+
+    def test_trace_action_links_model_menu_and_candidate_views(self):
+        trace = self.index.trace_action("demo.thing_action")
+        self.assertEqual(trace["actions"]["total"], 1)
+        self.assertEqual(trace["model_candidates"]["items"], ["demo.thing"])
+        self.assertEqual([m["xml_id"] for m in trace["menus"]["items"]], ["demo.things"])
+        self.assertEqual([v["xml_id"] for v in trace["view_candidates"]["items"]], ["demo.thing_form"])
+        self.assertEqual(self.index.trace_action("thing_action")["actions"]["total"], 1)
+        self.assertEqual(self.index.trace_action("missing")["actions"]["total"], 0)
+
+    def test_trace_view_includes_field_element_and_template_selectors(self):
+        (self.module / "selectors.xml").write_text('''<odoo>
+<record id="selectors" model="ir.ui.view">
+  <field name="inherit_id" ref="thing_form"/>
+  <field name="priority" eval="32"/>
+  <field name="arch" type="xml"><data>
+    <field name="partner_id" position="after"><field name="line_ids"/></field>
+    <div name="container" position="replace"><div/></div>
+  </data></field>
+</record>
+<template id="template_extension" inherit_id="thing_form">
+  <xpath expr="//div" position="inside"><span/></xpath>
+</template>
+</odoo>''')
+        self.index.refresh()
+        trace = self.index.trace_view("demo.thing_form")
+        views = {v["xml_id"]: v for v in trace["views"]["items"]}
+        selectors = views["demo.selectors"]["selectors"]["items"]
+        self.assertEqual([(s["tag"], s["attributes"].get("position")) for s in selectors], [("field", "after"), ("div", "replace")])
+        self.assertEqual(views["demo.selectors"]["fields"]["priority"], "32")
+        self.assertEqual(views["demo.template_extension"]["selectors"]["items"][0]["attributes"]["expr"], "//div")
+        self.assertEqual(self.index.trace_view("demo.selectors", 1)["views"]["items"][0]["selectors"]["total"], 2)
+        self.assertTrue(self.index.trace_view("demo.selectors", 1)["views"]["items"][0]["selectors"]["truncated"])
+
+    def test_trace_action_uses_window_action_view_records(self):
+        (self.module / "action_views.xml").write_text('''<odoo>
+<record id="other_view" model="ir.ui.view"><field name="model">other.model</field></record>
+<record id="action_form_link" model="ir.actions.act_window.view">
+  <field name="sequence" eval="2"/>
+  <field name="view_mode">form</field>
+  <field name="view_id" ref="other_view"/>
+  <field name="act_window_id" ref="thing_action"/>
+</record>
+</odoo>''')
+        self.index.refresh()
+        trace = self.index.trace_action("demo.thing_action")
+        self.assertEqual(trace["action_view_links"]["items"][0]["fields"]["sequence"], "2")
+        self.assertEqual({v["xml_id"] for v in trace["view_candidates"]["items"]}, {"demo.thing_form", "demo.other_view"})
+        self.assertEqual(self.index.trace_action("demo.action_form_link")["actions"]["total"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
