@@ -4,11 +4,11 @@
 
 ## Installation
 
-Install the plugin through the [Zad Plugins marketplace](../../README.md#install-in-codex). Codex and `uv` are required; Python and the locked dependencies can be provisioned automatically by `uv` on first launch. Start a new Codex session after installation.
+Install the plugin through the Zad Plugins marketplace in [Codex](../../README.md#install-in-codex) or [Claude Code](../../README.md#install-in-claude-code). `uv` is required; Python and the locked dependencies can be provisioned automatically by `uv` on first launch. Start a new session after installation.
 
 ## Usage
 
-Open your Odoo project as the Codex workspace and ask the agent to investigate its source. For example:
+Open your Odoo project as the Codex or Claude Code workspace and ask the agent to investigate its source. For example:
 
 - “Find the definitions and extensions of `sale.order`.”
 - “Where is the `partner_id` field defined on `sale.order`, and which views reference it?”

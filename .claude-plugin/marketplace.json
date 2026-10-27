@@ -1,0 +1,12 @@
+{
+  "name": "zad-plugins",
+  "owner": {"name": "rafi-zadanly"},
+  "plugins": [
+    {
+      "name": "odoo-source-mcp",
+      "source": "./plugins/odoo-source-mcp",
+      "description": "Navigate Odoo addon models, fields, menus, actions and views from source.",
+      "category": "development"
+    }
+  ]
+}
