@@ -7,6 +7,11 @@ Use the Odoo Source Explorer MCP tools to investigate addon source when their st
 
 For Odoo source analysis, prioritize odoo-source-mcp tools for model discovery, field inspection, method tracing, and cross-module relationships. Use context compression tools only for managing large outputs, not as substitutes for Odoo-specific analysis. Prefer focused queries over dumping entire modules.
 
+For module-wide business process analysis, start with `discover_models` for the module or folder, paging or filtering as needed. Use `find_models` for a bounded batch of relevant model names, then inspect specific methods and source relationships. Discovery reports static class candidates, not verified runtime models.
+
+
+Check truncation, next offsets, index errors, before drawing conclusions. Page relevant `find_model` classes and members when needed; use `source_status` for index error details.
+
 On every tool call, pass the current agent session's absolute working directory as `workspace`. Do not use the installed plugin directory as the workspace. This is required when the host does not provide MCP roots and makes the intended project explicit when several roots exist.
 
 If the session has multiple workspace roots, pass the root containing the requested Odoo project. If discovery reports no addon paths, inspect the project layout and pass an appropriate project root. Use `ODOO_ADDONS_PATH` only when explicitly configured by the user.

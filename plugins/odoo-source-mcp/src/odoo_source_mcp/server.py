@@ -77,7 +77,7 @@ async def diagnose_model(model: str, workspace: str | None = None, limit: int = 
     try:
         index = await get_index(str(project))
         index.refresh()
-        source = source_diagnostic(index, model, limit)
+        source = index_result(index, source_diagnostic(index, model, limit))
         names = sorted({c["module"] for c in index.classes if model in c["models"]})
     except (ValueError, OSError) as exc:
         source = {"found": None, "items": [], "error": str(exc)}
@@ -139,6 +139,14 @@ async def get_index(workspace: str | None):
     return indexes[key]
 
 
+def index_result(index: SourceIndex, result: dict) -> dict:
+    """Expose index errors without suggesting they are specific to the requested result."""
+    result["index_error_count"] = len(index.errors)
+    if index.errors:
+        result["index_error_note"] = "The index contains source errors; results may be incomplete. See source_status for details."
+    return result
+
+
 @mcp.tool()
 async def source_status(workspace: str | None = None, rebuild: bool = False) -> dict:
     """Show addon roots, index counts and parse errors. Pass the absolute session workspace path."""
@@ -148,11 +156,36 @@ async def source_status(workspace: str | None = None, rebuild: bool = False) -> 
 
 
 @mcp.tool()
-async def find_model(model: str, workspace: str | None = None, limit: int = 50) -> dict:
-    """Find model definitions/extensions, fields and methods. Pass the absolute session workspace path."""
+async def find_model(model: str, workspace: str | None = None, limit: int = 50, offset: int = 0,
+                     field_offset: int = 0, method_offset: int = 0) -> dict:
+    """Find model classes, fields and methods; page classes and each class's members using offsets."""
     index = await get_index(workspace)
     index.refresh()
-    return index.model(model, limit)
+    return index_result(index, index.model(model, limit, offset, field_offset, method_offset))
+
+
+@mcp.tool()
+async def discover_models(workspace: str | None = None, module: str | None = None, folder: str | None = None,
+                          query: str | None = None, offset: int = 0, limit: int = 50) -> dict:
+    """List static model class candidates in a module or absolute folder, with pagination."""
+    index = await get_index(workspace)
+    index.refresh()
+    return index_result(index, index.discover_models(module, folder, query, offset, limit))
+
+
+@mcp.tool()
+async def find_models(models: list[str], workspace: str | None = None, limit: int = 10) -> dict:
+    """Find up to 20 models in one request; limit each result and its fields and methods to 10."""
+    if not 1 <= len(models) <= 20:
+        raise ValueError("models must contain between 1 and 20 names")
+    for model in models:
+        _validate_model(model)
+    index = await get_index(workspace)
+    index.refresh()
+    limit = max(1, min(limit, 10))
+    return index_result(index, {"results": [{"model": model, **index.model(model, limit)} for model in models],
+            "limit_per_model": limit,
+            "note": "Static source candidates only; results do not establish installed modules or runtime behavior."})
 
 
 @mcp.tool()
@@ -160,7 +193,7 @@ async def find_field(model: str, field: str, workspace: str | None = None, limit
     """Find field definitions and candidate view references. Pass the absolute session workspace path."""
     index = await get_index(workspace)
     index.refresh()
-    return index.field(model, field, limit)
+    return index_result(index, index.field(model, field, limit))
 
 
 @mcp.tool()
@@ -168,7 +201,7 @@ async def find_menu(query: str, workspace: str | None = None, limit: int = 20) -
     """Trace menu, parent, action, model and candidate views. Pass the absolute session workspace path."""
     index = await get_index(workspace)
     index.refresh()
-    return index.menus(query, limit)
+    return index_result(index, index.menus(query, limit))
 
 
 @mcp.tool()
@@ -176,7 +209,7 @@ async def find_xml_id(xml_id: str, workspace: str | None = None, limit: int = 50
     """Find XML ID definitions and common references. Pass the absolute session workspace path."""
     index = await get_index(workspace)
     index.refresh()
-    return index.xml_id(xml_id, limit)
+    return index_result(index, index.xml_id(xml_id, limit))
 
 
 @mcp.tool()
@@ -184,7 +217,7 @@ async def trace_model(model: str, workspace: str | None = None, limit: int = 50)
     """Trace static model inheritance, delegation and direct descendant candidates."""
     index = await get_index(workspace)
     index.refresh()
-    return index.trace_model(model, limit)
+    return index_result(index, index.trace_model(model, limit))
 
 
 @mcp.tool()
@@ -192,7 +225,7 @@ async def trace_view(xml_id: str, workspace: str | None = None, limit: int = 50)
     """Trace static view/template inheritance and source selectors by XML ID."""
     index = await get_index(workspace)
     index.refresh()
-    return index.trace_view(xml_id, limit)
+    return index_result(index, index.trace_view(xml_id, limit))
 
 
 @mcp.tool()
@@ -200,7 +233,7 @@ async def find_method(model: str, method: str, workspace: str | None = None, lim
     """Find direct definitions and extension candidates for a method on a model."""
     index = await get_index(workspace)
     index.refresh()
-    return index.find_method(model, method, limit)
+    return index_result(index, index.find_method(model, method, limit))
 
 
 @mcp.tool()
@@ -208,7 +241,7 @@ async def trace_action(xml_id: str, workspace: str | None = None, limit: int = 5
     """Trace an action XML ID to candidate menus, models and views."""
     index = await get_index(workspace)
     index.refresh()
-    return index.trace_action(xml_id, limit)
+    return index_result(index, index.trace_action(xml_id, limit))
 
 
 def main():

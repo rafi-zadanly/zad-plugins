@@ -91,6 +91,7 @@ class SourceIndex:
         self.view_specs = {}
         self.errors = []
         self.modules = []
+        self.source_files = []
 
     def refresh(self, force=False):
         files = []
@@ -135,6 +136,7 @@ class SourceIndex:
             except (OSError, UnicodeError, SyntaxError, xml.sax.SAXException, ValueError) as exc:
                 self.errors.append({"path": str(path), "error": str(exc)})
         self.fingerprint = fingerprint
+        self.source_files = [(module, str(path)) for module, path, _, _ in files if path.suffix == ".py"]
         return True
 
     def _python(self, module, path):
@@ -243,15 +245,55 @@ class SourceIndex:
         limit = max(1, min(limit, 100))
         return {"total": len(items), "items": items[:limit], "truncated": len(items) > limit}
 
-    def model(self, name, limit=50):
-        result = self.limit([c for c in self.classes if name in c["models"]], limit)
+    def model(self, name, limit=50, offset=0, field_offset=0, method_offset=0):
+        if min(offset, field_offset, method_offset) < 0:
+            raise ValueError("offsets must be non-negative")
+        limit = max(1, min(limit, 100))
+        matches = [c for c in self.classes if name in c["models"]]
+        result = {"total": len(matches), "items": matches[offset:offset + limit], "truncated": len(matches) > limit,
+                  "offset": offset, "limit": limit, "next_offset": offset + limit if offset + limit < len(matches) else None}
         for i, cls in enumerate(result["items"]):
             fields = self.limit(cls["fields"], limit)
             methods = self.limit(cls["methods"], limit)
-            result["items"][i] = {**cls, "fields": fields["items"], "fields_total": fields["total"],
-                                  "fields_truncated": fields["truncated"], "methods": methods["items"],
-                                  "methods_total": methods["total"], "methods_truncated": methods["truncated"]}
+            result["items"][i] = {**cls, "fields": cls["fields"][field_offset:field_offset + limit], "fields_total": fields["total"],
+                                  "fields_truncated": fields["truncated"], "fields_offset": field_offset,
+                                  "fields_next_offset": field_offset + limit if field_offset + limit < fields["total"] else None,
+                                  "methods": cls["methods"][method_offset:method_offset + limit],
+                                  "methods_total": methods["total"], "methods_truncated": methods["truncated"],
+                                  "methods_offset": method_offset,
+                                  "methods_next_offset": method_offset + limit if method_offset + limit < methods["total"] else None}
+        result["note"] = "Static source candidates only; not proof of installed modules or runtime model behavior."
         return result
+
+    def discover_models(self, module=None, folder=None, query=None, offset=0, limit=50):
+        if not module and not folder:
+            raise ValueError("Specify a module name or an absolute folder path")
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
+        directory = None
+        if folder:
+            directory = Path(folder).expanduser()
+            if not directory.is_absolute() or not directory.is_dir():
+                raise ValueError("folder must be an absolute path to an existing directory")
+            directory = directory.resolve()
+        limit = max(1, min(limit, 100))
+        items = []
+        for cls in self.classes:
+            if module and cls["module"] != module:
+                continue
+            if directory and not Path(cls["path"]).resolve().is_relative_to(directory):
+                continue
+            for model in cls["models"]:
+                if query and query.casefold() not in model.casefold():
+                    continue
+                items.append({"model": model, "module": cls["module"], "class": cls["class"],
+                              "path": cls["path"], "line": cls["line"],
+                              "fields_count": len(cls["fields"]), "methods_count": len(cls["methods"])})
+        items.sort(key=lambda item: (item["model"], item["module"], item["path"], item["line"], item["class"]))
+        end = offset + limit
+        return {"total": len(items), "offset": offset, "limit": limit, "items": items[offset:end],
+                "next_offset": end if end < len(items) else None,
+                "note": "Static class candidates only; counts are per class, not effective runtime model totals. Dynamic declarations and runtime availability are not resolved."}
 
     def trace_model(self, name, limit=50):
         limit = max(1, min(limit, 100))

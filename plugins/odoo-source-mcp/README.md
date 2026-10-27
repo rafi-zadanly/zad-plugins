@@ -26,7 +26,9 @@ The bundled `odoo-source-mcp` skill instructs the agent to pass the current work
 | Tool | Purpose |
 | --- | --- |
 | `source_status` | Show discovered addon roots, index counts and parse errors; optionally rebuild the index. |
+| `discover_models` | List indexed model class candidates in a module or absolute folder, with optional model-name filtering and pagination. |
 | `find_model` | Find direct model definitions and extensions, inheritance, fields and methods. |
+| `find_models` | Look up up to 20 model names in one bounded request. |
 | `find_field` | Find direct field definitions, relational targets and candidate view references. |
 | `find_menu` | Trace matching menus to parent, action, model and candidate views. |
 | `find_xml_id` | Find XML ID definitions and common static references. |
@@ -40,6 +42,15 @@ The bundled `odoo-source-mcp` skill instructs the agent to pass the current work
 | `inspect_model_access` | Inspect a specific user's model ACL and record rules in a selected company context. |
 
 Results include source paths and line numbers. Result lists have limits and report truncation; for `find_model`, the limit also applies to the fields and methods returned per class. The in-memory index rebuilds when file paths, sizes or modification times change, and checks the source tree on each query.
+
+Source lookup results include `index_error_count` for the entire selected index; a nonzero count means results may be incomplete, not that every error affects the query. Use `source_status` for error details.
+
+For module-wide exploration, call `discover_models` with `workspace` and an exact `module` name or an absolute `folder`; both filters may be combined. Optional `query` is a case-insensitive substring of the model name. Each row represents one model/class pair, including extension classes; counts are declarations in that class, not runtime totals. Results are sorted by model, module, path and line, and paginated with `offset` and `limit` (default 50, maximum 100); use `next_offset` to fetch the next page. Pagination reflects the current index and may shift if source changes between calls. Only indexed addon source is included.
+
+Use `find_models(models=["sale.order", "sale.order.line"], workspace="/absolute/project")` for up to 20 names, in input order. Its `limit` defaults to 10 and is capped at 10 for each model's classes, fields and methods; each result retains `find_model`'s totals and truncation indicators. `find_model` remains unchanged. All results are static candidates, not proof of installed modules or registry behavior.
+
+For larger results, `find_model` accepts `offset` for classes and `field_offset` / `method_offset` for members within every returned class. Use `next_offset`, `fields_next_offset`, and `methods_next_offset` from the result; set `limit=1` and the class `offset` to page members of a particular class. These offsets refer to the current source index and may shift after edits. The batch tool remains bounded; follow up with `find_model` to page an individual model.
+
 
 Trace tools follow only statically identifiable relationships. `trace_model` follows ancestors and reports direct descendants; `find_method` does not resolve inherited Python/Odoo method order. Delegation via `_inherits` exposes fields, not methods. `trace_view` reports XPath and top-level field or element selectors in inherited views and templates; it does not apply selectors or resolve view application order. `trace_action` reports direct menu references, indexed `ir.actions.act_window.view` records, and candidate views matching the action's model or explicit view references. Dynamic references, view records without XML IDs and action view lists may be missing. Inspect the cited source before relying on a trace.
 

@@ -92,6 +92,7 @@ class MCPWorkspaceTests(unittest.IsolatedAsyncioTestCase):
                 (base / project / ".git").mkdir()
                 (module / "__manifest__.py").write_text("{}")
                 (module / "model.py").write_text(f'class A:\n    _name = "{project}.model"\n    def open(self): pass\n')
+                (module / "broken.py").write_text('def broken(:\n')
                 (module / "views.xml").write_text(f'''<odoo>
 <record id="view" model="ir.ui.view"><field name="model">{project}.model</field></record>
 <record id="action" model="ir.actions.act_window"><field name="res_model">{project}.model</field></record>
@@ -108,6 +109,20 @@ class MCPWorkspaceTests(unittest.IsolatedAsyncioTestCase):
                     await session.initialize()
                     listed = await session.list_tools()
                     self.assertTrue({"trace_model", "trace_view", "find_method", "trace_action"}.issubset({tool.name for tool in listed.tools}))
+                    self.assertTrue({"discover_models", "find_models"}.issubset({tool.name for tool in listed.tools}))
+                    response = await session.call_tool("discover_models", {"workspace": str(base / "one"), "module": "one", "limit": 1})
+                    self.assertFalse(response.isError, response.content)
+                    data = response.structuredContent or json.loads(response.content[0].text)
+                    self.assertEqual(data["items"][0]["model"], "one.model")
+                    self.assertEqual(data["index_error_count"], 1)
+                    self.assertIn("source_status", data["index_error_note"])
+                    response = await session.call_tool("find_models", {"workspace": str(base / "one"), "models": ["one.model", "missing.model"], "limit": 100})
+                    self.assertFalse(response.isError, response.content)
+                    data = response.structuredContent or json.loads(response.content[0].text)
+                    self.assertEqual([item["total"] for item in data["results"]], [1, 0])
+                    self.assertEqual(data["limit_per_model"], 10)
+                    response = await session.call_tool("find_models", {"workspace": str(base / "one"), "models": ["one.model"] * 21})
+                    self.assertTrue(response.isError)
                     for model, workspace, expected in (("one.model", None, 1), ("two.model", str(base / "two"), 1), ("one.model", str(base / "two"), 0)):
                         args = {"model": model}
                         if workspace:

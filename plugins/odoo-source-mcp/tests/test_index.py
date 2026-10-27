@@ -83,6 +83,47 @@ class Derived(models.Model):
         self.assertTrue(model["methods_truncated"])
         self.assertEqual(self.index.field("demo.thing", "line_ids")["definitions"]["total"], 1)
 
+    def test_model_paginates_classes_and_members_independently(self):
+        first = self.index.model("demo.thing", 1)
+        self.assertEqual(first["next_offset"], 1)
+        self.assertEqual(first["items"][0]["fields_next_offset"], 1)
+        self.assertEqual(first["items"][0]["methods_next_offset"], 1)
+        members = self.index.model("demo.thing", 1, field_offset=1, method_offset=1)
+        self.assertEqual(members["items"][0]["fields"][0]["name"], "line_ids")
+        self.assertEqual(members["items"][0]["methods"][0]["name"], "action_close")
+        self.assertIsNone(members["items"][0]["fields_next_offset"])
+        second = self.index.model("demo.thing", 1, offset=1)
+        self.assertEqual(second["items"][0]["class"], "Extended")
+        self.assertIsNone(second["next_offset"])
+        with self.assertRaises(ValueError):
+            self.index.model("demo.thing", field_offset=-1)
+
+    def test_discover_models_filter_pagination_and_class_counts(self):
+        nested = self.module / "sub"
+        nested.mkdir()
+        (nested / "extra.py").write_text('class Extra:\n    _inherit = ["demo.thing", "other.model"]\n    def run(self): pass\n')
+        self.index.refresh()
+        all_results = self.index.discover_models(module="demo", limit=2)
+        self.assertEqual(all_results["total"], 5)
+        self.assertEqual(all_results["next_offset"], 2)
+        second = self.index.discover_models(module="demo", offset=2, limit=2)
+        third = self.index.discover_models(module="demo", offset=4, limit=2)
+        rows = all_results["items"] + second["items"] + third["items"]
+        self.assertEqual([r["model"] for r in rows], sorted(r["model"] for r in rows))
+        self.assertIsNone(third["next_offset"])
+        thing = next(r for r in rows if r["class"] == "Thing")
+        self.assertEqual((thing["fields_count"], thing["methods_count"]), (2, 2))
+        self.assertEqual(self.index.discover_models(folder=str(nested), query="THING")["total"], 1)
+        self.assertEqual(self.index.discover_models(module="missing", folder=str(nested))["total"], 0)
+        self.assertEqual(self.index.discover_models(module="demo", offset=100)["items"], [])
+        self.assertEqual(self.index.discover_models(module="demo", limit=1000)["limit"], 100)
+        with self.assertRaises(ValueError):
+            self.index.discover_models()
+        with self.assertRaises(ValueError):
+            self.index.discover_models(folder="relative")
+        with self.assertRaises(ValueError):
+            self.index.discover_models(module="demo", offset=-1)
+
     def test_skips_symlinked_modules_and_manifests(self):
         external = Path(self.temp.name) / "external"
         external.mkdir()
