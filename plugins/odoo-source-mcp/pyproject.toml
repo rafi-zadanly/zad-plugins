@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "odoo-source-mcp"
-version = "0.5.0"
+version = "0.5.1"
 description = "Odoo source navigation and optional runtime shell access for MCP clients"
 requires-python = ">=3.11"
 dependencies = ["mcp>=1.28,<2"]

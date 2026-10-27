@@ -11,6 +11,8 @@ For module-wide business process analysis, start with `discover_models` for the 
 
 Use `inspect_module` for manifest and indexed Python import candidates, `inspect_field_behavior` for field behavior and decorators, and `trace_method_calls` for local call syntax. Follow cited source and explain unresolved imports, receivers, and runtime dispatch; absence of a static match is not proof of absence at runtime.
 
+For workflow questions, use `find_state_assignments` for a chosen state field and `find_object_buttons` for candidate view entry points. For cross-model callers, scope `trace_method_calls` with `caller_module` or `caller_folder`. Report unresolved writes, ambiguous view models and static candidates explicitly; verify cited source and never claim a runtime transition from syntax alone.
+
 Check truncation, next offsets, index errors, and inspection issues before drawing conclusions. Page relevant `find_model` classes and members or `trace_method_calls` callers and callees when needed; use `source_status` for index error details.
 
 On every tool call, pass the current agent session's absolute working directory as `workspace`. Do not use the installed plugin directory as the workspace. This is required when the host does not provide MCP roots and makes the intended project explicit when several roots exist.

@@ -11,7 +11,7 @@ from mcp.types import ClientCapabilities, RootsCapability, ToolAnnotations
 
 from .diagnostics import diagnose_runtime, inspect_access, observations, source_diagnostic
 from .index import SourceIndex
-from .inspection import field_behavior, inspect_module as inspect_module_source, method_calls
+from .inspection import field_behavior, inspect_module as inspect_module_source, method_calls, object_buttons, state_assignments
 from .runtime import inspect_runtime, resolve_runtime
 from .shell import execute
 from .workspace import discover_roots
@@ -210,13 +210,39 @@ async def inspect_field_behavior(model: str, field: str, workspace: str | None =
 
 @mcp.tool()
 async def trace_method_calls(model: str, method: str, workspace: str | None = None, limit: int = 20,
-                             caller_offset: int = 0, callee_offset: int = 0) -> dict:
+                             caller_offset: int = 0, callee_offset: int = 0, caller_module: str | None = None,
+                             caller_folder: str | None = None) -> dict:
     """Find and page candidate calls within indexed model classes; runtime dispatch is unresolved."""
     _validate_model(model)
     _validate_model(method)
     index = await get_index(workspace)
     index.refresh()
-    return index_result(index, method_calls(index, model, method, limit, caller_offset, callee_offset))
+    return index_result(index, method_calls(index, model, method, limit, caller_offset, callee_offset, caller_module, caller_folder))
+
+
+@mcp.tool()
+async def find_state_assignments(model: str, workspace: str | None = None, field: str = "state",
+                                 method: str | None = None, limit: int = 20, offset: int = 0) -> dict:
+    """Find static assignments to a chosen state field in indexed model classes."""
+    _validate_model(model)
+    _validate_model(field)
+    if method is not None:
+        _validate_model(method)
+    index = await get_index(workspace)
+    index.refresh()
+    return index_result(index, state_assignments(index, model, field, method, limit, offset))
+
+
+@mcp.tool()
+async def find_object_buttons(model: str, workspace: str | None = None, method: str | None = None,
+                              limit: int = 20, offset: int = 0) -> dict:
+    """Find object-button syntax and model/method candidates, including inherited views."""
+    _validate_model(model)
+    if method is not None:
+        _validate_model(method)
+    index = await get_index(workspace)
+    index.refresh()
+    return index_result(index, object_buttons(index, model, method, limit, offset))
 
 
 @mcp.tool()

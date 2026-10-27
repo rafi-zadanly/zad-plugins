@@ -92,6 +92,7 @@ class SourceIndex:
         self.errors = []
         self.modules = []
         self.source_files = []
+        self.buttons = []
 
     def refresh(self, force=False):
         files = []
@@ -121,6 +122,7 @@ class SourceIndex:
         self.view_xpaths = {}
         self.view_specs = {}
         self.modules = []
+        self.buttons = []
         for module, manifest in modules:
             try:
                 data = literal(ast.parse(manifest.read_text(encoding="utf-8")).body[0].value, {})
@@ -221,6 +223,13 @@ class SourceIndex:
                         for child in descendants(node) if child.tag == "xpath"]
                     arches = [child for child in node.children if child.tag == "field" and child.attrs.get("name") == "arch"]
                     selector_nodes = node.children if node.tag == "template" else [child for arch in arches for child in arch.children]
+                    def button_nodes(children, nested=False):
+                        for child in children:
+                            if child.tag == "button" and child.attrs.get("type") == "object" and child.attrs.get("name"):
+                                self.buttons.append({**loc, "line": child.line, "view": record["xml_id"],
+                                                     "view_line": node.line, "method": child.attrs["name"], "nested_field": nested})
+                            button_nodes(child.children, nested or child.tag == "field")
+                    button_nodes(selector_nodes)
                     if record["fields"].get("inherit_id"):
                         self.view_specs[(str(path), node.line)] = list(view_selectors(selector_nodes))
                     for child in descendants(node):
