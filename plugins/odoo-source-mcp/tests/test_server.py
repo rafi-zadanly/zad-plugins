@@ -8,9 +8,36 @@ from pathlib import Path
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import ListRootsResult, Root
+from test_runtime import FAKE_ODOO
 
 
 class MCPWorkspaceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shell_tools_over_stdio(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".git").mkdir()
+            (project / "odoo-bin").write_text(FAKE_ODOO)
+            (project / "odoo.conf").write_text("[options]\ndb_name = test_db\n")
+            (project / ".venv/bin").mkdir(parents=True)
+            (project / ".venv/bin/python").symlink_to(sys.executable)
+            env = {key: value for key, value in os.environ.items() if not key.startswith("ODOO_MCP_") and key != "ODOO_SOURCE_ROOT"}
+            params = StdioServerParameters(command=sys.executable, args=["-m", "odoo_source_mcp.server"], env=env)
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    tools = {tool.name: tool for tool in (await session.list_tools()).tools}
+                    self.assertTrue(tools["execute_odoo_expression"].annotations.destructiveHint)
+                    status = await session.call_tool("odoo_runtime_status", {"workspace": str(project)})
+                    self.assertFalse(status.isError, status.content)
+                    status_data = status.structuredContent or json.loads(status.content[0].text)
+                    self.assertEqual(status_data["database"], "test_db")
+                    result = await session.call_tool("execute_odoo_expression", {"workspace": str(project), "expression": "env['res.partner'].search_count([])"})
+                    self.assertFalse(result.isError)
+                    result_data = result.structuredContent or json.loads(result.content[0].text)
+                    self.assertEqual(result_data["result"], 2)
+                    rejected = await session.call_tool("execute_odoo_expression", {"workspace": str(project), "expression": "env.cr.commit()"})
+                    self.assertTrue(rejected.isError)
+
     async def test_roots_and_explicit_workspace_are_isolated(self):
         with tempfile.TemporaryDirectory(prefix="odoo%20test-") as tmp:
             base = Path(tmp)

@@ -1,0 +1,8 @@
+# Copy to the Odoo project root as .odoo-mcp.toml and adapt the paths.
+[runtime]
+python = ".venv/bin/python"
+executable = "odoo/odoo-bin"
+config = "config/odoo.conf"
+database = "project_a_dev"
+# Optional: overrides addons_path in the Odoo config.
+# addons_path = ["odoo/addons", "custom-addons"]

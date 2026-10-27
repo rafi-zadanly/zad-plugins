@@ -6,7 +6,7 @@ This repository is a plugin marketplace for Codex and Claude Code.
 
 | Plugin | Description |
 | --- | --- |
-| [odoo-source-mcp](plugins/odoo-source-mcp/README.md) | Navigate Odoo addon source, including models, fields, menus, and XML IDs. |
+| [odoo-source-mcp](plugins/odoo-source-mcp/README.md) | Navigate Odoo addon source and optionally query a configured Odoo runtime. |
 
 ## Repository layout
 
@@ -37,7 +37,7 @@ codex plugin marketplace add rafi-zadanly/zad-plugins
 codex plugin add odoo-source-mcp@zad-plugins
 ```
 
-Start a new Codex session after installation. The marketplace adds the plugin package; the `uv run` launcher automatically creates its Python environment and installs the locked dependencies on first use. No separate `uv sync`, MCP registration, database connection, or Odoo credentials are needed. The first launch needs network access to fetch dependencies and, if necessary, Python 3.11; subsequent launches can use the local uv cache and environment. `uv` must already be installed and discoverable in the Codex process's `PATH`. Availability of plugin installation depends on the Codex client and its configuration. Alternatively select the marketplace and install the plugin in the ChatGPT desktop app's Plugins Directory.
+Start a new Codex session after installation. The marketplace adds the plugin package; the `uv run` launcher automatically creates its Python environment and installs the locked dependencies on first use. Source navigation needs no separate `uv sync`, MCP registration, database connection, or Odoo credentials. Optional Odoo shell access requires the [project runtime setup](plugins/odoo-source-mcp/README.md#odoo-shell-setup). The first launch needs network access to fetch dependencies and, if necessary, Python 3.11; subsequent launches can use the local uv cache and environment. `uv` must already be installed and discoverable in the Codex process's `PATH`. Availability of plugin installation depends on the Codex client and its configuration. Alternatively select the marketplace and install the plugin in the ChatGPT desktop app's Plugins Directory.
 
 To use a local checkout instead of the GitHub source, add the repository root as the marketplace:
 

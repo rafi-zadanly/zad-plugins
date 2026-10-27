@@ -5,7 +5,7 @@
     {
       "name": "odoo-source-mcp",
       "source": "./plugins/odoo-source-mcp",
-      "description": "Navigate Odoo addon models, fields, menus, actions and views from source.",
+      "description": "Navigate Odoo addon source and inspect a configured Odoo runtime.",
       "category": "development"
     }
   ]

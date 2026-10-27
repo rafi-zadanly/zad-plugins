@@ -1,14 +1,17 @@
-"""MCP entry point. All tools inspect local source without executing Odoo code."""
+"""MCP entry point for Odoo source navigation and optional shell access."""
 
+import asyncio
 import os
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ClientCapabilities, RootsCapability
+from mcp.types import ClientCapabilities, RootsCapability, ToolAnnotations
 
 from .index import SourceIndex
+from .runtime import resolve_runtime
+from .shell import execute
 from .workspace import discover_roots
 
 mcp = FastMCP("Odoo Source Explorer")
@@ -22,6 +25,42 @@ def roots_from_uri(uris):
         if parsed.scheme == "file" and parsed.netloc in ("", "localhost"):
             paths.append(Path(url2pathname(parsed.path)))
     return paths
+
+
+async def runtime_workspace(workspace: str | None) -> Path:
+    if workspace:
+        path = Path(workspace).expanduser()
+        if not path.is_absolute():
+            raise ValueError("workspace must be an absolute path to the current Odoo project")
+        return path
+    if os.environ.get("ODOO_SOURCE_ROOT"):
+        return Path(os.environ["ODOO_SOURCE_ROOT"]).expanduser()
+    session = mcp.get_context().session
+    paths = []
+    if session.check_client_capability(ClientCapabilities(roots=RootsCapability())):
+        paths = roots_from_uri([root.uri for root in (await session.list_roots()).roots])
+    if len(paths) != 1:
+        raise ValueError("Pass workspace as the absolute path of the current Odoo project; the MCP client did not provide exactly one local workspace root.")
+    return paths[0]
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
+async def odoo_runtime_status(workspace: str | None = None) -> dict:
+    """Resolve and validate Odoo shell configuration without connecting to the database."""
+    runtime = resolve_runtime(await runtime_workspace(workspace))
+    return {"workspace": str(runtime.workspace), "python": str(runtime.python), "executable": str(runtime.executable),
+            "config": str(runtime.config), "database": runtime.database, "addons_path": [str(p) for p in runtime.addons]}
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True))
+async def execute_odoo_expression(expression: str, workspace: str | None = None, allow_mutation: bool = False,
+                                  commit: bool = False, timeout: int = 30) -> dict:
+    """Execute an ORM expression in Odoo shell. Read-only by default; mutations and commits require explicit opt-in.
+
+    Odoo shell runs as superuser. Only use a trusted project and runtime; this is not a sandbox.
+    """
+    runtime = resolve_runtime(await runtime_workspace(workspace))
+    return await asyncio.to_thread(execute, runtime, expression, allow_mutation, commit, timeout)
 
 
 async def get_index(workspace: str | None):

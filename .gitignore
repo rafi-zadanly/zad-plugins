@@ -9,3 +9,8 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+
+# Local environment files can contain credentials.
+.env
+.env.*
+!.env.example
