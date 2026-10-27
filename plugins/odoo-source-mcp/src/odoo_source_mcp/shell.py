@@ -10,7 +10,7 @@ import signal
 import subprocess
 import tempfile
 import uuid
-from .runtime import Runtime
+from .runtime import Runtime, shell_environment
 
 READ_METHODS = {"browse", "search", "search_count", "search_read", "read", "fields_get", "name_get", "exists", "mapped"}
 READ_PROPERTIES = {"id", "ids"}
@@ -134,16 +134,13 @@ finally:
     args = [str(runtime.python), str(runtime.executable), "shell", "-c", str(runtime.config), "-d", runtime.database]
     if runtime.addons:
         args += ["--addons-path", ",".join(str(path) for path in runtime.addons)]
-    environment = os.environ.copy()
-    for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT", "PYTHONSTARTUP"):
-        environment.pop(key, None)
-    environment["PATH"] = str(runtime.python.parent) + os.pathsep + environment.get("PATH", "")
+    environment = shell_environment(runtime.python)
     if not allow_mutation:
         environment["PGOPTIONS"] = (environment.get("PGOPTIONS", "") + " -c default_transaction_read_only=on").strip()
     try:
         # Files avoid buffering unlimited addon output in the MCP process's memory.
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-            process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=stdout, stderr=stderr, cwd=runtime.workspace,
+            process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=stdout, stderr=stderr, cwd=runtime.working_directory,
                                        env=environment, start_new_session=(os.name == "posix"))
             try:
                 process.communicate(script.encode("utf-8"), timeout=timeout)

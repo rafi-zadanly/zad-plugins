@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from odoo_source_mcp.runtime import resolve_runtime
+from odoo_source_mcp.runtime import inspect_runtime, resolve_runtime
 from odoo_source_mcp.shell import execute, validate_read_expression
 
 
@@ -78,6 +78,86 @@ addons_path = ["addons"]
         self.assertEqual(runtime.database, "environment_db")
         self.assertEqual(runtime.addons, (nested,))
         self.assertEqual(runtime.python, self.root / ".venv/bin/python")
+
+    def test_shell_working_directory_and_relative_config_addons(self):
+        project = self.root / "project"
+        project.mkdir()
+        (self.root / "addons").mkdir()
+        (self.root / "custom").mkdir()
+        (self.root / "odoo.conf").write_text("[options]\ndb_name = discovered_db\naddons_path = addons, custom, missing\n")
+        (project / ".odoo-mcp.toml").write_text('''[runtime]
+python = "../.venv/bin/python"
+executable = "../odoo-bin"
+config = "../odoo.conf"
+database = "project_db"
+working_directory = ".."
+''')
+        (self.root / "odoo-bin").write_text('''import os, sys
+assert os.path.isdir("addons") and os.path.isdir("custom")
+assert "--addons-path" not in sys.argv
+''' + FAKE_ODOO)
+        status = inspect_runtime(project)
+        self.assertTrue(status["ready"], status)
+        self.assertEqual(status["working_directory"], str(self.root))
+        self.assertEqual(status["sources"]["working_directory"]["kind"], "project_file")
+        self.assertEqual(status["sources"]["working_directory"]["relative_base"], str(project))
+        entries = status["config_addons_path"]["entries"]
+        self.assertEqual([entry["resolved"] for entry in entries], [str(self.root / name) for name in ("addons", "custom", "missing")])
+        self.assertEqual([entry["exists"] for entry in entries], [True, True, False])
+        self.assertEqual(status["config_addons_path"]["raw"], "addons, custom, missing")
+        self.assertFalse(status["config_addons_path"]["overridden"])
+        self.assertEqual(status["warnings"][0]["path"], str(self.root / "missing"))
+        self.assertTrue(execute(resolve_runtime(project), "env['res.partner'].search_count([])")["ok"])
+
+    def test_working_directory_default_environment_and_override(self):
+        project = self.root / "project"
+        project.mkdir()
+        (self.root / "addons").mkdir()
+        (self.root / "odoo.conf").write_text("[options]\ndb_name = discovered_db\naddons_path = addons, $MCP_TEST_ADDONS\n")
+        (project / ".odoo-mcp.toml").write_text('''[runtime]
+python = "../.venv/bin/python"
+executable = "../odoo-bin"
+config = "../odoo.conf"
+database = "project_db"
+''')
+        os.environ["MCP_TEST_ADDONS"] = str(self.root / "addons")
+        status = inspect_runtime(project)
+        self.assertEqual(status["working_directory"], str(project))
+        self.assertEqual(status["sources"]["working_directory"]["kind"], "workspace_default")
+        self.assertTrue(any(w["field"] == "working_directory" for w in status["warnings"]))
+        self.assertEqual(status["config_addons_path"]["entries"][0]["resolved"], str(project / "addons"))
+        self.assertEqual(status["config_addons_path"]["entries"][1]["resolved"], str(self.root / "addons"))
+        os.environ["ODOO_MCP_WORKING_DIRECTORY"] = ".."
+        os.environ["ODOO_MCP_ADDONS_PATH"] = str(self.root / "addons")
+        status = inspect_runtime(project)
+        self.assertEqual(status["working_directory"], str(self.root))
+        self.assertEqual(status["sources"]["working_directory"]["variable"], "ODOO_MCP_WORKING_DIRECTORY")
+        self.assertTrue(status["config_addons_path"]["overridden"])
+        self.assertEqual(resolve_runtime(project).addons, (self.root / "addons",))
+        os.environ["ODOO_MCP_WORKING_DIRECTORY"] = "does-not-exist"
+        with self.assertRaisesRegex(ValueError, "working_directory is not a directory"):
+            resolve_runtime(project)
+
+    def test_override_marks_missing_config_addons_as_ineffective(self):
+        (self.root / "addons").mkdir()
+        (self.root / "odoo.conf").write_text("[options]\ndb_name = db\naddons_path = missing\n")
+        os.environ["ODOO_MCP_ADDONS_PATH"] = str(self.root / "addons")
+        status = inspect_runtime(self.root)
+        self.assertTrue(status["ready"])
+        self.assertTrue(status["config_addons_path"]["overridden"])
+        self.assertFalse(status["warnings"][0]["effective"])
+        self.assertFalse(any(w["field"] == "working_directory" for w in status["warnings"]))
+
+    def test_symlink_working_directory_resolves_addons_from_actual_cwd(self):
+        (self.root / "actual/odoo").mkdir(parents=True)
+        (self.root / "actual/addons").mkdir()
+        (self.root / "linked-odoo").symlink_to(self.root / "actual/odoo", target_is_directory=True)
+        (self.root / "odoo.conf").write_text("[options]\ndb_name = db\naddons_path = ../addons\n")
+        (self.root / ".odoo-mcp.toml").write_text('[runtime]\nworking_directory = "linked-odoo"\n')
+        status = inspect_runtime(self.root)
+        entry = status["config_addons_path"]["entries"][0]
+        self.assertEqual(entry["resolved"], str(self.root / "actual/addons"))
+        self.assertTrue(entry["exists"])
 
     def test_explicit_invalid_paths_and_database_fail_closed(self):
         os.environ["ODOO_MCP_PYTHON"] = "missing"

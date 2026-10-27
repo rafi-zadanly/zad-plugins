@@ -53,15 +53,32 @@ python = ".venv/bin/python"
 executable = "odoo/odoo-bin"
 config = "config/odoo.conf"
 database = "project_a_dev"
+# Optional: Odoo shell's working directory. Defaults to the session workspace.
+# working_directory = "."
 # Optional: overrides addons_path in the Odoo config.
 # addons_path = ["odoo/addons", "custom-addons"]
 ```
 
 Choose the Python interpreter from the **Odoo project's** virtual environment, and the actual `odoo-bin` script. These are separate from the plugin's `uv` environment. Use a development database and a trusted local project. Paths in this file are relative to its directory; absolute paths are also supported. The `addons_path` override is an array of directories. If omitted, Odoo uses its own config. Keep Odoo database credentials in the Odoo config or another appropriate private mechanism, not this example file.
 
-Each setting is resolved in this order: nonempty environment variable, nearest `.odoo-mcp.toml`, then bounded discovery. The environment variables are documented in [.env.example](.env.example): `ODOO_MCP_PYTHON`, `ODOO_MCP_EXECUTABLE`, `ODOO_MCP_CONFIG`, `ODOO_MCP_DATABASE` and optional `ODOO_MCP_ADDONS_PATH` (OS-path-separated). Relative environment paths use the TOML directory if found, otherwise the workspace. `.env` is **not** loaded automatically: export the variables in the process launching the client or provide them in the client configuration.
+Each setting is resolved in this order: nonempty environment variable, nearest `.odoo-mcp.toml`, then bounded discovery. The environment variables are documented in [.env.example](.env.example): `ODOO_MCP_PYTHON`, `ODOO_MCP_EXECUTABLE`, `ODOO_MCP_CONFIG`, `ODOO_MCP_DATABASE`, `ODOO_MCP_WORKING_DIRECTORY` and optional `ODOO_MCP_ADDONS_PATH` (OS-path-separated). Relative environment paths use the TOML directory if found, otherwise the workspace. `.env` is **not** loaded automatically: export the variables in the process launching the client or provide them in the client configuration.
+
+If Odoo normally starts from a directory other than the workspace, set `working_directory`. For example, when `.odoo-mcp.toml` is inside a project folder directly below the Odoo root:
+
+```toml
+[runtime]
+python = "../.venv/bin/python"
+executable = "../odoo-bin"
+config = "../odoo.conf"
+database = "mhg_dev"
+working_directory = ".."
+```
+
+The working directory is resolved relative to `.odoo-mcp.toml`, just like the other runtime paths. When omitted, it remains the session workspace; the directory containing `odoo.conf` is not automatically selected. Odoo resolves relative paths in its own `addons_path` against this working directory. By contrast, MCP's optional `addons_path` override is resolved relative to the TOML file (or workspace when absent), then passed to Odoo as absolute paths.
 
 Discovery checks the workspace and its ancestors up to the nearest Git root, at most four directories, and never the home or filesystem root. It looks for `.venv/bin/python` or `venv/bin/python` (or Windows equivalents), `odoo-bin` or `odoo/odoo-bin`, and `odoo.conf` or `config/odoo.conf`. For each setting it selects the first existing candidate, starting at the workspace and checking names in the order listed; it does not detect multiple candidates as ambiguous. If database is not set explicitly, it reads a single `db_name` from `[options]` in the resolved Odoo config. Missing or invalid values, including multiple database names, prevent execution; discovery never runs commands from configuration or `AGENTS.md`. `odoo_runtime_status` reports resolved values, the source of each value, the relative path base, validation errors, and `ready`. It returns partial results when configuration is invalid. This validates paths, not database connectivity or Python/Odoo compatibility.
+
+`odoo_runtime_status` also reports the working directory and its source, plus `config_addons_path` with the raw config value, each resolved path, whether it exists, and whether MCP's addon override takes precedence. Missing config addon directories are warnings, not execution errors; warnings identify whether the config paths are effective or overridden. If effective config paths are relative and the working directory defaults to the workspace, status warns that another working directory may be needed. When the config omits `addons_path`, Odoo may supply its own default paths; these are not inferred by this status check.
 
 Pass the absolute Odoo project path as `workspace`; otherwise the server uses `ODOO_SOURCE_ROOT` or exactly one MCP workspace root. The installed plugin directory is not the project workspace.
 

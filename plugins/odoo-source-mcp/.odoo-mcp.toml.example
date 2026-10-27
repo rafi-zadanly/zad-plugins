@@ -4,5 +4,7 @@ python = ".venv/bin/python"
 executable = "odoo/odoo-bin"
 config = "config/odoo.conf"
 database = "project_a_dev"
+# Optional: relative to this file; otherwise the session workspace is used.
+# working_directory = "."
 # Optional: overrides addons_path in the Odoo config.
 # addons_path = ["odoo/addons", "custom-addons"]
