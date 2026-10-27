@@ -1,0 +1,12 @@
+{
+  "name": "odoo-source-mcp",
+  "version": "0.1.0",
+  "description": "Navigate Odoo addon models, fields, menus, actions and views from source.",
+  "repository": "https://github.com/rafi-zadanly/zad-plugins",
+  "mcpServers": {
+    "odoo-source-mcp": {
+      "command": "uv",
+      "args": ["run", "--locked", "--project", "${CLAUDE_PLUGIN_ROOT}", "odoo-source-mcp"]
+    }
+  }
+}
