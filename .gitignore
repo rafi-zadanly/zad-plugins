@@ -1,0 +1,11 @@
+!.agents/
+!.agents/plugins/
+!.agents/plugins/marketplace.json
+
+# Python environments and generated files
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/

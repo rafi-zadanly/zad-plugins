@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "odoo-source-mcp": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--locked", "--project", "${PLUGIN_ROOT}", "odoo-source-mcp"],
+      "cwd": "${PLUGIN_ROOT}"
+    }
+  }
+}

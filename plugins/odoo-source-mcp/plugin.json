@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "odoo-source-mcp",
+  "version": "0.1.0",
+  "description": "Navigate Odoo addon models, fields, menus, actions and views from source.",
+  "repository": "https://github.com/rafi-zadanly/zad-plugins",
+  "extensions": {"com.openai": {"requires_local_executor": true}}
+}
