@@ -11,6 +11,7 @@ from mcp.types import ClientCapabilities, RootsCapability, ToolAnnotations
 
 from .diagnostics import diagnose_runtime, inspect_access, observations, source_diagnostic
 from .index import SourceIndex
+from .inspection import field_behavior, inspect_module as inspect_module_source, method_calls
 from .runtime import inspect_runtime, resolve_runtime
 from .shell import execute
 from .workspace import discover_roots
@@ -186,6 +187,36 @@ async def find_models(models: list[str], workspace: str | None = None, limit: in
     return index_result(index, {"results": [{"model": model, **index.model(model, limit)} for model in models],
             "limit_per_model": limit,
             "note": "Static source candidates only; results do not establish installed modules or runtime behavior."})
+
+
+@mcp.tool()
+async def inspect_module(module: str, workspace: str | None = None, limit: int = 20, offset: int = 0) -> dict:
+    """Inspect a module manifest and static import paths to indexed Python source files."""
+    _validate_model(module)
+    index = await get_index(workspace)
+    index.refresh()
+    return index_result(index, inspect_module_source(index, module, limit, offset))
+
+
+@mcp.tool()
+async def inspect_field_behavior(model: str, field: str, workspace: str | None = None, limit: int = 20) -> dict:
+    """Find static field behavior declarations and candidate decorated methods."""
+    _validate_model(model)
+    _validate_model(field)
+    index = await get_index(workspace)
+    index.refresh()
+    return index_result(index, field_behavior(index, model, field, limit))
+
+
+@mcp.tool()
+async def trace_method_calls(model: str, method: str, workspace: str | None = None, limit: int = 20,
+                             caller_offset: int = 0, callee_offset: int = 0) -> dict:
+    """Find and page candidate calls within indexed model classes; runtime dispatch is unresolved."""
+    _validate_model(model)
+    _validate_model(method)
+    index = await get_index(workspace)
+    index.refresh()
+    return index_result(index, method_calls(index, model, method, limit, caller_offset, callee_offset))
 
 
 @mcp.tool()

@@ -1,6 +1,6 @@
 {
   "name": "odoo-source-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Navigate Odoo addon source and inspect a configured Odoo runtime.",
   "repository": "https://github.com/rafi-zadanly/zad-plugins",
   "mcpServers": {

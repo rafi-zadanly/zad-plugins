@@ -110,6 +110,12 @@ class MCPWorkspaceTests(unittest.IsolatedAsyncioTestCase):
                     listed = await session.list_tools()
                     self.assertTrue({"trace_model", "trace_view", "find_method", "trace_action"}.issubset({tool.name for tool in listed.tools}))
                     self.assertTrue({"discover_models", "find_models"}.issubset({tool.name for tool in listed.tools}))
+                    self.assertTrue({"inspect_module", "inspect_field_behavior", "trace_method_calls"}.issubset({tool.name for tool in listed.tools}))
+                    for tool, args in (("inspect_module", {"module": "one"}),
+                                       ("inspect_field_behavior", {"model": "one.model", "field": "name"}),
+                                       ("trace_method_calls", {"model": "one.model", "method": "open"})):
+                        response = await session.call_tool(tool, {**args, "workspace": str(base / "one")})
+                        self.assertFalse(response.isError, response.content)
                     response = await session.call_tool("discover_models", {"workspace": str(base / "one"), "module": "one", "limit": 1})
                     self.assertFalse(response.isError, response.content)
                     data = response.structuredContent or json.loads(response.content[0].text)

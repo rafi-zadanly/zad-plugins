@@ -9,8 +9,9 @@ For Odoo source analysis, prioritize odoo-source-mcp tools for model discovery, 
 
 For module-wide business process analysis, start with `discover_models` for the module or folder, paging or filtering as needed. Use `find_models` for a bounded batch of relevant model names, then inspect specific methods and source relationships. Discovery reports static class candidates, not verified runtime models.
 
+Use `inspect_module` for manifest and indexed Python import candidates, `inspect_field_behavior` for field behavior and decorators, and `trace_method_calls` for local call syntax. Follow cited source and explain unresolved imports, receivers, and runtime dispatch; absence of a static match is not proof of absence at runtime.
 
-Check truncation, next offsets, index errors, before drawing conclusions. Page relevant `find_model` classes and members when needed; use `source_status` for index error details.
+Check truncation, next offsets, index errors, and inspection issues before drawing conclusions. Page relevant `find_model` classes and members or `trace_method_calls` callers and callees when needed; use `source_status` for index error details.
 
 On every tool call, pass the current agent session's absolute working directory as `workspace`. Do not use the installed plugin directory as the workspace. This is required when the host does not provide MCP roots and makes the intended project explicit when several roots exist.
 
