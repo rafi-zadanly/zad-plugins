@@ -9,9 +9,47 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import ListRootsResult, Root
 from test_runtime import FAKE_ODOO
+from test_diagnostics import FAKE_DIAGNOSTIC_ODOO
 
 
 class MCPWorkspaceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_diagnostics_and_access_over_stdio(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / ".git").mkdir()
+            (project / ".venv/bin").mkdir(parents=True)
+            (project / ".venv/bin/python").symlink_to(sys.executable)
+            (project / "odoo-bin").write_text(FAKE_DIAGNOSTIC_ODOO)
+            (project / "odoo.conf").write_text("[options]\ndb_name = test_db\n")
+            addon = project / "addons/sample"
+            addon.mkdir(parents=True)
+            (addon / "__manifest__.py").write_text("{}")
+            (addon / "__init__.py").write_text("from . import model\n")
+            (addon / "model.py").write_text("class A:\n    _name = 'missing.model'\n")
+            env = {key: value for key, value in os.environ.items() if not key.startswith("ODOO_MCP_") and key != "ODOO_SOURCE_ROOT"}
+            params = StdioServerParameters(command=sys.executable, args=["-m", "odoo_source_mcp.server"], env=env)
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    response = await session.call_tool("diagnose_model", {"workspace": str(project), "model": "missing.model"})
+                    self.assertFalse(response.isError, response.content)
+                    data = response.structuredContent or json.loads(response.content[0].text)
+                    self.assertTrue(data["source"]["found"])
+                    self.assertFalse(data["runtime"]["result"]["registry"]["present"])
+                    self.assertEqual(data["source"]["items"][0]["import_trace"]["status"], "statically_reachable")
+                    response = await session.call_tool("inspect_model_access", {"workspace": str(project), "model": "present.model", "user_id": 7, "company_ids": [3], "record_ids": [11]})
+                    self.assertFalse(response.isError, response.content)
+                    data = response.structuredContent or json.loads(response.content[0].text)
+                    self.assertEqual(data["result"]["company_id"], 3)
+                    self.assertFalse(data["result"]["records"][0]["record_rules"]["write"])
+                    (project / "odoo-bin").unlink()
+                    response = await session.call_tool("diagnose_model", {"workspace": str(project), "model": "missing.model"})
+                    data = response.structuredContent or json.loads(response.content[0].text)
+                    self.assertTrue(data["source"]["found"])
+                    self.assertEqual(data["findings"][0]["kind"], "runtime_unknown")
+                    self.assertIsNone(data["runtime"]["result"]["registry"]["present"])
+                    self.assertIsNone(data["runtime"]["result"]["metadata"]["present"])
+
     async def test_shell_tools_over_stdio(self):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

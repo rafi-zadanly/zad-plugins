@@ -36,6 +36,8 @@ The bundled `odoo-source-mcp` skill instructs the agent to pass the current work
 | `trace_action` | Find an action by XML ID and its candidate menus, models and views. |
 | `odoo_runtime_status` | Resolve and validate the selected project's shell configuration without connecting to Odoo. |
 | `execute_odoo_expression` | Evaluate an ORM expression in Odoo shell; read-only by default. |
+| `diagnose_model` | Compare source candidates and import paths with model metadata, module states, and the shell registry. |
+| `inspect_model_access` | Inspect a specific user's model ACL and record rules in a selected company context. |
 
 Results include source paths and line numbers. Result lists have limits and report truncation; for `find_model`, the limit also applies to the fields and methods returned per class. The in-memory index rebuilds when file paths, sizes or modification times change, and checks the source tree on each query.
 
@@ -59,7 +61,7 @@ Choose the Python interpreter from the **Odoo project's** virtual environment, a
 
 Each setting is resolved in this order: nonempty environment variable, nearest `.odoo-mcp.toml`, then bounded discovery. The environment variables are documented in [.env.example](.env.example): `ODOO_MCP_PYTHON`, `ODOO_MCP_EXECUTABLE`, `ODOO_MCP_CONFIG`, `ODOO_MCP_DATABASE` and optional `ODOO_MCP_ADDONS_PATH` (OS-path-separated). Relative environment paths use the TOML directory if found, otherwise the workspace. `.env` is **not** loaded automatically: export the variables in the process launching the client or provide them in the client configuration.
 
-Discovery checks the workspace and its ancestors up to the nearest Git root, at most four directories, and never the home or filesystem root. It looks for `.venv/bin/python` or `venv/bin/python` (or Windows equivalents), `odoo-bin` or `odoo/odoo-bin`, and `odoo.conf` or `config/odoo.conf`. If database is not set explicitly, it reads a single `db_name` from `[options]` in the resolved Odoo config. Missing, ambiguous, or invalid values fail with an error; discovery never runs commands from configuration or `AGENTS.md`. Use `odoo_runtime_status` to review the selected interpreter, executable, config, database, and any addon override. This validates paths, not database connectivity or Python/Odoo compatibility.
+Discovery checks the workspace and its ancestors up to the nearest Git root, at most four directories, and never the home or filesystem root. It looks for `.venv/bin/python` or `venv/bin/python` (or Windows equivalents), `odoo-bin` or `odoo/odoo-bin`, and `odoo.conf` or `config/odoo.conf`. For each setting it selects the first existing candidate, starting at the workspace and checking names in the order listed; it does not detect multiple candidates as ambiguous. If database is not set explicitly, it reads a single `db_name` from `[options]` in the resolved Odoo config. Missing or invalid values, including multiple database names, prevent execution; discovery never runs commands from configuration or `AGENTS.md`. `odoo_runtime_status` reports resolved values, the source of each value, the relative path base, validation errors, and `ready`. It returns partial results when configuration is invalid. This validates paths, not database connectivity or Python/Odoo compatibility.
 
 Pass the absolute Odoo project path as `workspace`; otherwise the server uses `ODOO_SOURCE_ROOT` or exactly one MCP workspace root. The installed plugin directory is not the project workspace.
 
@@ -99,13 +101,29 @@ Read-only mode accepts `env['model']` and chains of `browse`, `search`, `search_
 {"workspace": "/absolute/path/to/project", "expression": "env['res.partner'].browse(42).write({'name': 'Example'})", "allow_mutation": true}
 ```
 
-Add `"commit": true` to explicitly persist the transaction. `commit` requires `allow_mutation: true`. Calls time out after 30 seconds by default; `timeout` can be set from 1 to 120 seconds. Errors are returned as structured results, and oversized results are rejected. Startup diagnostics on stderr are not returned; configure Odoo's logfile if detailed startup logs are needed. If a committed call times out or the process fails after committing, its final database state may be unknown; inspect the database before retrying.
+Add `"commit": true` to explicitly persist the transaction. `commit` requires `allow_mutation: true`. Calls time out after 30 seconds by default; `timeout` can be set from 1 to 120 seconds. Errors are returned as structured results, and oversized results are rejected. Shell failures include a best-effort stage classification (`configuration`, `database_connection`, `odoo_startup`, or `expression`); startup classifications are heuristics, not proof of the cause. Startup stderr is withheld by default. Setting `include_stderr: true` returns a bounded excerpt with best-effort redaction, which **can still contain sensitive values** from addon logs. Configure Odoo's logfile for full diagnostics. If a committed call times out or the process fails after committing, its final database state may be unknown; inspect the database before retrying.
 
 Odoo shell runs as the Odoo superuser, bypassing normal user access rules. Default read-only calls restrict expression syntax, set PostgreSQL's default transaction mode to read-only, and block cursor commits during expression evaluation; uncommitted changes are rolled back. Odoo's [shell documentation](https://www.odoo.com/documentation/16.0/developer/cli.html#shell) describes its transaction behavior. These safeguards reduce accidental changes, but **are not a security sandbox**: trusted addon code and explicitly enabled expressions can perform external side effects or use other connections. A read-only PostgreSQL role gives stronger database protection. Database values and error messages are returned to the MCP client; avoid sensitive data and use only trusted runtimes.
 
-## Workspace discovery
+### Diagnose a model
 
-The server looks at the workspace, its immediate children, `odoo/addons`, and ancestors up to the nearest Git root, or at most three ancestors without a Git root. It does not read Odoo configuration or search the whole filesystem. If no unambiguous workspace is available, it returns an error instead of silently scanning another project. Check `source_status` for selected roots and parse errors.
+```json
+{"workspace": "/absolute/path/to/project", "model": "eproc.request"}
+```
+
+Call `diagnose_model` with these arguments to combine static model definitions, addon manifests and possible Python import chains with the selected shell's registry, `ir.model`, relevant metadata external IDs and module states. Module names come from source candidates and metadata external IDs; they are not a complete list of every addon that might affect the model. A missing import chain is a candidate for investigation, not proof: conditional and dynamic imports, duplicate addon names, and Odoo load order can change the result. Source and runtime failures are reported independently. When runtime inspection fails, registry and metadata remain unknown; discrepancies suggest possible causes without identifying a root cause.
+
+### Inspect access for a user
+
+```json
+{"workspace": "/absolute/path/to/project", "model": "sale.order", "user_id": 7, "company_ids": [2], "record_ids": [42]}
+```
+
+Call `inspect_model_access` to inspect ACLs for `read`, `create`, `write`, and `unlink`, plus record rules for `read`, `write`, and `unlink` on up to 20 existing record IDs. `company_ids` is optional; if omitted, the user's default company is used. The first selected company is the current company, and every selected company must belong to the user. Output explicitly reports the user, superuser mode, current company and allowed companies. User 1 remains superuser under Odoo's `with_user` behavior. A missing record has no rule result; ACL and record-rule results are separate and both matter. The rule check uses Odoo's internal rule-domain computation and can vary with Odoo versions or custom overrides. Create rules, field-level permissions, contextual UI behavior and custom business logic are not simulated. See [Odoo ORM environments](https://www.odoo.com/documentation/16.0/developer/reference/backend/orm.html#altering-the-environment) and [security rules](https://www.odoo.com/documentation/16.0/developer/reference/backend/security.html).
+
+## Source workspace discovery
+
+For source indexing, the server looks at the workspace, its immediate children, `odoo/addons`, and ancestors up to the nearest Git root, or at most three ancestors without a Git root. Source discovery does not read Odoo configuration or search the whole filesystem. If no unambiguous workspace is available, it returns an error instead of silently scanning another project. Check `source_status` for selected roots and parse errors. Shell runtime discovery is described in [Odoo shell setup](#odoo-shell-setup).
 
 When no `workspace` argument is provided, the server uses `ODOO_ADDONS_PATH`, then `ODOO_SOURCE_ROOT`, then a single local MCP root supplied by the client. `ODOO_ADDONS_PATH` is an OS-path-separated list of addon **containers** (directories containing module folders); each entry must be an existing directory, though it can be empty. `ODOO_SOURCE_ROOT` is a project root to discover from. An explicit workspace takes precedence over these environment variables, so the bundled skill's workspace selection normally takes priority. For nonstandard layouts, ask the agent to select a suitable workspace, or configure the fallback for clients that omit it.
 
@@ -113,9 +131,9 @@ Discovery and indexing skip symlinked addon modules and manifests. A container t
 
 ## Compatibility and limitations
 
-The initial design targets common Odoo 16–18 addon patterns, including [ORM inheritance](https://www.odoo.com/documentation/16.0/developer/reference/backend/orm.html), [view inheritance](https://www.odoo.com/documentation/16.0/developer/reference/backend/views.html), [actions](https://www.odoo.com/documentation/16.0/developer/reference/backend/actions.html), and [XML data](https://www.odoo.com/documentation/16.0/developer/reference/backend/data.html). It supports field references in Odoo 17 `tree` and Odoo 18 `list` view roots but does not validate version-specific view syntax. Integration against actual Odoo 17 and 18 installations has not been verified.
+The source index targets common Odoo 16–18 addon patterns, including [ORM inheritance](https://www.odoo.com/documentation/16.0/developer/reference/backend/orm.html), [view inheritance](https://www.odoo.com/documentation/16.0/developer/reference/backend/views.html), [actions](https://www.odoo.com/documentation/16.0/developer/reference/backend/actions.html), and [XML data](https://www.odoo.com/documentation/16.0/developer/reference/backend/data.html). It supports field references in Odoo 17 `tree` and Odoo 18 `list` view roots but does not validate version-specific view syntax. Runtime shell, model diagnosis, and access inspection have been tested with a simulated shell, not against actual Odoo 16, 17, or 18 databases.
 
-Results are static candidates, not proof of installed modules, final registry or views, access rules, or runtime behavior. The index can include files not imported or listed in a manifest; duplicate module names are not resolved in Odoo load order. Dynamic declarations and some XML references may be missed. Fields from inherited models are not resolved automatically, and nested view fields may belong to another model. Tests, static assets and hidden directories are excluded. Inspect the original source and use Odoo runtime checks when needed.
+Source index results are static candidates, not proof of installed modules, final registry or views, access rules, or runtime behavior. The index can include files not imported or listed in a manifest; duplicate module names are not resolved in Odoo load order. Dynamic declarations and some XML references may be missed. Fields from inherited models are not resolved automatically, and nested view fields may belong to another model. Tests, static assets and hidden directories are excluded. Inspect the original source and use Odoo runtime checks when needed.
 
 Only use trusted addon roots: source metadata is sent to the connected MCP client.
 

@@ -5,12 +5,11 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
 import uuid
-from pathlib import Path
-
 from .runtime import Runtime
 
 READ_METHODS = {"browse", "search", "search_count", "search_read", "read", "fields_get", "name_get", "exists", "mapped"}
@@ -50,16 +49,38 @@ def validate_read_expression(expression: str) -> None:
     check(tree.body)
 
 
-def execute(runtime: Runtime, expression: str, allow_mutation: bool = False, commit: bool = False, timeout: int = 30) -> dict:
+def _diagnostics(stderr: str, include_stderr: bool) -> dict:
+    lower = stderr.lower()
+    if any(term in lower for term in ("operationalerror", "connection refused", "could not connect to server", "password authentication failed")):
+        stage = "database_connection"
+    elif any(term in lower for term in ("config file", "configuration file", "unrecognized arguments", "no such option")):
+        stage = "configuration"
+    else:
+        stage = "odoo_startup"
+    info = {"stage": stage, "classification": "heuristic"}
+    if include_stderr:
+        # This removes common forms only; arbitrary addon logs may contain secrets.
+        snippet = stderr[-2000:]
+        snippet = re.sub(r"(?i)(password|passwd|token|secret|api[_-]?key)(\s*[:=]\s*)([^\s,;]+)", r"\1\2[REDACTED]", snippet)
+        snippet = re.sub(r"(://[^:/\s]+:)[^@\s]+(@)", r"\1[REDACTED]\2", snippet)
+        info["stderr_excerpt"] = snippet
+        info["stderr_note"] = "Best-effort redaction only; addon logs may contain sensitive values."
+    return info
+
+
+def execute(runtime: Runtime, expression: str, allow_mutation: bool = False, commit: bool = False, timeout: int = 30,
+            include_stderr: bool = False, *, _program: str | None = None) -> dict:
     if not isinstance(expression, str) or not expression.strip() or len(expression) > 16000:
         raise ValueError("expression must contain 1 to 16000 characters")
     if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 120:
         raise ValueError("timeout must be between 1 and 120 seconds")
     if commit and not allow_mutation:
         raise ValueError("commit requires allow_mutation=true")
-    if not allow_mutation:
+    if _program is not None and (allow_mutation or commit):
+        raise ValueError("Internal diagnostics must be read-only")
+    if not allow_mutation and _program is None:
         validate_read_expression(expression)
-    else:
+    elif allow_mutation:
         try:
             ast.parse(expression, mode="eval")
         except SyntaxError as exc:
@@ -72,6 +93,7 @@ import datetime as _datetime
 import decimal as _decimal
 _marker = {marker!r}
 _expr = {expression!r}
+_program = {_program!r}
 _commit = {commit!r}
 _cursor_type = type(env.cr)
 _original_commit = _cursor_type.commit
@@ -91,7 +113,12 @@ def _serialize(value):
 try:
     if not _commit:
         _cursor_type.commit = _blocked_commit
-    _value = eval(compile(_expr, "<odoo-mcp>", "eval"), {{"__builtins__": {{}}}}, {{"env": env}})
+    if _program is None:
+        _value = eval(compile(_expr, "<odoo-mcp>", "eval"), {{"__builtins__": {{}}}}, {{"env": env}})
+    else:
+        _scope = {{"env": env}}
+        exec(compile(_program, "<odoo-mcp-diagnostic>", "exec"), _scope)
+        _value = _scope["_result"]
     _encoded = _json.dumps(_value, default=_serialize, ensure_ascii=True, allow_nan=False)
     if len(_encoded) > 100000:
         raise ValueError("Result exceeds 100000 characters; narrow the query")
@@ -100,7 +127,7 @@ try:
     print(_marker + _json.dumps({{"ok": True, "result": _json.loads(_encoded), "committed": _commit}}, ensure_ascii=True))
 except Exception as _error:
     env.cr.rollback()
-    print(_marker + _json.dumps({{"ok": False, "error": {{"type": type(_error).__name__, "message": str(_error)[:2000]}}, "committed": None if _commit else False}}, ensure_ascii=True))
+    print(_marker + _json.dumps({{"ok": False, "error": {{"type": type(_error).__name__, "message": str(_error)[:2000], "stage": "expression"}}, "committed": None if _commit else False}}, ensure_ascii=True))
 finally:
     _cursor_type.commit = _original_commit
 '''
@@ -131,11 +158,14 @@ finally:
             size = stdout.tell()
             stdout.seek(max(0, size - 120000))
             output = stdout.read().decode("utf-8", errors="replace")
+            stderr.seek(0, os.SEEK_END)
+            stderr.seek(max(0, stderr.tell() - 16000))
+            stderr_output = stderr.read().decode("utf-8", errors="replace")
     except OSError as exc:
-        return {"ok": False, "error": {"type": "LaunchError", "message": str(exc)}, "committed": False}
+        return {"ok": False, "error": {"type": "LaunchError", "stage": "launch", "message": str(exc)}, "committed": False}
     matches = [line[len(marker):] for line in output.splitlines() if line.startswith(marker)]
     if not matches or process.returncode != 0:
-        return {"ok": False, "error": {"type": "ShellError", "message": f"Odoo shell failed or returned no result (exit {process.returncode}); check the runtime and Odoo logs."}, "committed": None if commit else False}
+        return {"ok": False, "error": {"type": "ShellError", "message": f"Odoo shell failed or returned no result (exit {process.returncode}); check the runtime and Odoo logs.", **_diagnostics(stderr_output, include_stderr)}, "committed": None if commit else False}
     try:
         return json.loads(matches[-1])
     except json.JSONDecodeError:

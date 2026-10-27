@@ -32,18 +32,22 @@ def _bases(workspace: Path) -> list[Path]:
 
 def _path(value: str, base: Path) -> Path:
     path = Path(value).expanduser()
-    # Do not resolve symlinks: a venv's python symlink must be invoked via its venv path.
+    # Preserve a venv's python symlink so Python recognizes its environment.
     return Path(os.path.abspath(base / path))
 
 
-def resolve_runtime(workspace: Path) -> Runtime:
+def inspect_runtime(workspace: Path) -> dict:
+    """Return partial results and provenance even when settings are invalid."""
     workspace = workspace.expanduser().resolve()
     if not workspace.is_dir():
         raise ValueError(f"Workspace is not a directory: {workspace}")
     bases = _bases(workspace)
     project_file = next((base / ".odoo-mcp.toml" for base in bases if (base / ".odoo-mcp.toml").is_file()), None)
-    project = {}
     config_base = project_file.parent if project_file else workspace
+    report = {"workspace": str(workspace), "project_file": str(project_file) if project_file else None,
+              "relative_base": str(config_base), "python": None, "executable": None, "config": None,
+              "database": None, "addons_path": [], "sources": {}, "errors": [], "ready": False}
+    project = {}
     if project_file:
         try:
             with project_file.open("rb") as stream:
@@ -55,54 +59,85 @@ def resolve_runtime(workspace: Path) -> Runtime:
             if unknown:
                 raise ValueError(f"Unknown runtime settings: {', '.join(sorted(unknown))}")
         except (OSError, tomllib.TOMLDecodeError, ValueError) as exc:
-            raise ValueError(f"Invalid {project_file}: {exc}") from exc
+            report["errors"].append({"field": "project_file", "message": f"Invalid {project_file}: {exc}"})
+            project = {}
 
-    def setting(key: str, variable: str):
-        value = os.environ.get(variable) or project.get(key)
-        if value is not None and (not isinstance(value, str) or not value.strip()):
-            raise ValueError(f"{variable} / runtime.{key} must be a non-empty string")
+    def setting(key, variable):
+        value = os.environ.get(variable)
+        if value:
+            source = {"kind": "environment", "variable": variable}
+        elif key in project:
+            value = project[key]
+            source = {"kind": "project_file", "path": str(project_file), "key": key}
+        else:
+            return None
+        report["sources"][key] = source
+        if not isinstance(value, str) or not value.strip():
+            report["errors"].append({"field": key, "message": f"{variable} / runtime.{key} must be a non-empty string"})
+            return None
         return value
 
-    def candidate(key: str, variable: str, names: tuple[str, ...]) -> Path | None:
+    for key, variable, names in (
+        ("python", "ODOO_MCP_PYTHON", (".venv/bin/python", "venv/bin/python", ".venv/Scripts/python.exe", "venv/Scripts/python.exe")),
+        ("executable", "ODOO_MCP_EXECUTABLE", ("odoo-bin", "odoo/odoo-bin")),
+        ("config", "ODOO_MCP_CONFIG", ("odoo.conf", "config/odoo.conf")),
+    ):
         value = setting(key, variable)
-        if value:
-            return _path(value, config_base)
-        return next((base / name for base in bases for name in names if (base / name).is_file()), None)
-
-    python = candidate("python", "ODOO_MCP_PYTHON", (".venv/bin/python", "venv/bin/python", ".venv/Scripts/python.exe", "venv/Scripts/python.exe"))
-    executable = candidate("executable", "ODOO_MCP_EXECUTABLE", ("odoo-bin", "odoo/odoo-bin"))
-    config = candidate("config", "ODOO_MCP_CONFIG", ("odoo.conf", "config/odoo.conf"))
-    missing = [name for name, value in (("python", python), ("executable", executable), ("config", config)) if not value]
-    if missing:
-        raise ValueError(f"Odoo runtime is incomplete: {', '.join(missing)}. Configure .odoo-mcp.toml or ODOO_MCP_* environment variables.")
-    for label, path in (("python", python), ("executable", executable), ("config", config)):
-        if not path.is_file():
-            raise ValueError(f"Odoo {label} is not a file: {path}")
-    if not os.access(python, os.X_OK):
-        raise ValueError(f"Odoo python is not executable: {python}")
+        path = _path(value, config_base) if value else None
+        if path is None and key not in report["sources"]:
+            path = next((base / name for base in bases for name in names if (base / name).is_file()), None)
+            if path:
+                report["sources"][key] = {"kind": "discovery", "base": str(next(base for base in bases if path.is_relative_to(base)))}
+        if path:
+            report[key] = str(path)
+            report["sources"][key]["relative_base"] = str(config_base) if value else None
+            if not path.is_file():
+                report["errors"].append({"field": key, "message": f"Odoo {key} is not a file: {path} (relative base: {config_base})"})
+            elif key == "python" and not os.access(path, os.X_OK):
+                report["errors"].append({"field": key, "message": f"Odoo python is not executable: {path}"})
+        elif key not in report["sources"]:
+            report["errors"].append({"field": key, "message": f"Odoo runtime is incomplete: {key}. Configure .odoo-mcp.toml or ODOO_MCP_* environment variables."})
 
     database = setting("database", "ODOO_MCP_DATABASE")
-    if not database:
+    if not database and "database" not in report["sources"] and report["config"] and Path(report["config"]).is_file():
         parser = configparser.ConfigParser(interpolation=None)
         try:
-            with config.open(encoding="utf-8") as stream:
+            with open(report["config"], encoding="utf-8") as stream:
                 parser.read_file(stream)
             database = parser.get("options", "db_name", fallback="").strip()
-        except (OSError, configparser.Error) as exc:
-            raise ValueError(f"Cannot read Odoo config {config}: {exc}") from exc
+            if database:
+                report["sources"]["database"] = {"kind": "odoo_config", "path": report["config"], "key": "db_name"}
+        except (OSError, configparser.Error, UnicodeError) as exc:
+            report["errors"].append({"field": "database", "message": f"Cannot read Odoo config {report['config']}: {exc}"})
+    if database:
+        report["database"] = database
     if not database or database.lower() in {"false", "none"} or "," in database or database.startswith("-"):
-        raise ValueError("Configure exactly one database in runtime.database, ODOO_MCP_DATABASE, or the Odoo config db_name.")
+        report["errors"].append({"field": "database", "message": "Configure exactly one database in runtime.database, ODOO_MCP_DATABASE, or the Odoo config db_name."})
 
     addons_value = os.environ.get("ODOO_MCP_ADDONS_PATH")
     if addons_value:
         addons = addons_value.split(os.pathsep)
+        report["sources"]["addons_path"] = {"kind": "environment", "variable": "ODOO_MCP_ADDONS_PATH", "relative_base": str(config_base)}
+    elif "addons_path" in project:
+        addons = project["addons_path"]
+        report["sources"]["addons_path"] = {"kind": "project_file", "path": str(project_file), "key": "addons_path", "relative_base": str(config_base)}
     else:
-        addons = project.get("addons_path", [])
-        if not isinstance(addons, list):
-            raise ValueError("runtime.addons_path must be an array of directory paths")
-    if any(not isinstance(p, str) or not p.strip() for p in addons):
-        raise ValueError("Each addons path must be a non-empty string")
-    addon_paths = tuple(_path(p, config_base) for p in addons)
-    if any(not p.is_dir() or "," in str(p) for p in addon_paths):
-        raise ValueError("Each addons path must be an existing directory without a comma in its name")
-    return Runtime(workspace, python, executable, config, database, addon_paths)
+        addons = []
+        report["sources"]["addons_path"] = {"kind": "odoo_config_default"}
+    if not isinstance(addons, list) or any(not isinstance(p, str) or not p.strip() for p in addons):
+        report["errors"].append({"field": "addons_path", "message": "runtime.addons_path must be an array of non-empty directory paths"})
+    else:
+        report["addons_path"] = [str(_path(p, config_base)) for p in addons]
+        for path in report["addons_path"]:
+            if not Path(path).is_dir() or "," in path:
+                report["errors"].append({"field": "addons_path", "message": f"Addons path must be an existing directory without commas: {path} (relative base: {config_base})"})
+    report["ready"] = not report["errors"]
+    return report
+
+
+def resolve_runtime(workspace: Path) -> Runtime:
+    report = inspect_runtime(workspace)
+    if not report["ready"]:
+        raise ValueError("; ".join(item["message"] for item in report["errors"]))
+    return Runtime(Path(report["workspace"]), Path(report["python"]), Path(report["executable"]),
+                   Path(report["config"]), report["database"], tuple(Path(p) for p in report["addons_path"]))

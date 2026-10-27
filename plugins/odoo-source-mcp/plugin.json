@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "odoo-source-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Navigate Odoo addon source and inspect a configured Odoo runtime.",
   "repository": "https://github.com/rafi-zadanly/zad-plugins",
   "extensions": {"com.openai": {"requires_local_executor": true}}

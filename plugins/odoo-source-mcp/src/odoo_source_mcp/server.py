@@ -9,8 +9,9 @@ from urllib.request import url2pathname
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ClientCapabilities, RootsCapability, ToolAnnotations
 
+from .diagnostics import diagnose_runtime, inspect_access, observations, source_diagnostic
 from .index import SourceIndex
-from .runtime import resolve_runtime
+from .runtime import inspect_runtime, resolve_runtime
 from .shell import execute
 from .workspace import discover_roots
 
@@ -46,21 +47,67 @@ async def runtime_workspace(workspace: str | None) -> Path:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
 async def odoo_runtime_status(workspace: str | None = None) -> dict:
-    """Resolve and validate Odoo shell configuration without connecting to the database."""
-    runtime = resolve_runtime(await runtime_workspace(workspace))
-    return {"workspace": str(runtime.workspace), "python": str(runtime.python), "executable": str(runtime.executable),
-            "config": str(runtime.config), "database": runtime.database, "addons_path": [str(p) for p in runtime.addons]}
+    """Resolve configuration and its sources, including partial results, without connecting to the database."""
+    return inspect_runtime(await runtime_workspace(workspace))
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True))
 async def execute_odoo_expression(expression: str, workspace: str | None = None, allow_mutation: bool = False,
-                                  commit: bool = False, timeout: int = 30) -> dict:
+                                  commit: bool = False, timeout: int = 30, include_stderr: bool = False) -> dict:
     """Execute an ORM expression in Odoo shell. Read-only by default; mutations and commits require explicit opt-in.
 
     Odoo shell runs as superuser. Only use a trusted project and runtime; this is not a sandbox.
     """
     runtime = resolve_runtime(await runtime_workspace(workspace))
-    return await asyncio.to_thread(execute, runtime, expression, allow_mutation, commit, timeout)
+    return await asyncio.to_thread(execute, runtime, expression, allow_mutation, commit, timeout, include_stderr)
+
+
+def _validate_model(model: str) -> None:
+    if not isinstance(model, str) or not model.strip() or len(model) > 200:
+        raise ValueError("model must contain 1 to 200 characters")
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
+async def diagnose_model(model: str, workspace: str | None = None, limit: int = 50,
+                         timeout: int = 30, include_stderr: bool = False) -> dict:
+    """Compare static source candidates, imports, database metadata, module states and the shell registry."""
+    _validate_model(model)
+    project = await runtime_workspace(workspace)
+    config = inspect_runtime(project)
+    try:
+        index = await get_index(str(project))
+        index.refresh()
+        source = source_diagnostic(index, model, limit)
+        names = sorted({c["module"] for c in index.classes if model in c["models"]})
+    except (ValueError, OSError) as exc:
+        source = {"found": None, "items": [], "error": str(exc)}
+        names = []
+    if config["ready"]:
+        runtime = await asyncio.to_thread(diagnose_runtime, resolve_runtime(project), model, names[:100], timeout, include_stderr)
+    else:
+        runtime = {"ok": False, "error": {"type": "ConfigurationError", "stage": "configuration", "message": "Odoo runtime configuration is incomplete or invalid."}}
+    if not runtime.get("ok"):
+        runtime["result"] = {"registry": {"present": None}, "metadata": {"present": None}, "modules": {"records": None}}
+    return {"model": model, "configuration": config, "source": source, "runtime": runtime,
+            "source_module_candidates": names[:100], "source_module_candidates_truncated": len(names) > 100,
+            "findings": observations(source, runtime)}
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
+async def inspect_model_access(model: str, user_id: int, workspace: str | None = None,
+                               company_ids: list[int] | None = None, record_ids: list[int] | None = None,
+                               timeout: int = 30, include_stderr: bool = False) -> dict:
+    """Inspect model ACL and selected record rules as a specific user and company context; never mutate records."""
+    _validate_model(model)
+    if isinstance(user_id, bool) or user_id < 1:
+        raise ValueError("user_id must be a positive integer")
+    for label, values in (("company_ids", company_ids), ("record_ids", record_ids)):
+        if values is not None and (len(values) > 20 or any(isinstance(value, bool) or value < 1 for value in values)):
+            raise ValueError(f"{label} must contain at most 20 positive integers")
+    if company_ids == []:
+        raise ValueError("company_ids must not be empty; omit it to use the user's default company")
+    runtime = resolve_runtime(await runtime_workspace(workspace))
+    return await asyncio.to_thread(inspect_access, runtime, model, user_id, company_ids, record_ids or [], timeout, include_stderr)
 
 
 async def get_index(workspace: str | None):
