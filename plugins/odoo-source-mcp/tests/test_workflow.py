@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from odoo_source_mcp.index import SourceIndex
-from odoo_source_mcp.inspection import method_calls, object_buttons, state_assignments
+from odoo_source_mcp.inspection import automation_triggers, method_calls, object_buttons, state_assignments
 
 
 class WorkflowEvidenceTests(unittest.TestCase):
@@ -107,6 +107,50 @@ class OtherExtension:
         self.assertNotIn("button", evidence[0])
         self.assertIn("not a runtime transition", states["note"])
         self.assertFalse(any(item["value"] == "wrong" for item in states["items"]))
+
+    def test_relations_inheritance_ambiguity_and_unrelated_calls(self):
+        (self.module / "relations.py").write_text('''class Base:
+    _name = "demo.base"
+    request_id = fields.Many2one("demo.request")
+class Child:
+    _name = "demo.child"
+    _inherit = "demo.base"
+    def go(self): self.request_id.approve()
+class Other:
+    _name = "demo.other2"
+    request_id = fields.Many2one("demo.unrelated")
+    def go(self): self.request_id.approve()
+class Extension:
+    _inherit = "demo.base"
+    request_id = fields.Many2one("demo.alternative")
+''')
+        self.index.refresh()
+        calls = method_calls(self.index, "demo.request", "approve", caller_module="demo")
+        child = next(c for c in calls["callers"]["items"] if c.get("caller_models") == ["demo.child"])
+        self.assertEqual(child["relationship"], "ambiguous_relational_field")
+        self.assertEqual(set(child["target_candidates"]), {"demo.request", "demo.alternative"})
+        self.assertEqual(child["field_declarations"]["total"], 2)
+        self.assertFalse(any(c.get("caller_models") == ["demo.other2"] for c in calls["callers"]["items"]))
+
+    def test_automation_and_ui_conditions(self):
+        (self.module / "automation.xml").write_text('''<odoo>
+<record id="cron" model="ir.cron"><field name="model_id" ref="model_demo_request"/><field name="code">model.approve()</field></record>
+<record id="server_action" model="ir.actions.server"><field name="model_id" ref="model_demo_request"/><field name="code">
+    if records:
+        records.approve()
+</field></record>
+<record id="view_conditions" model="ir.ui.view"><field name="model">demo.request</field><field name="arch" type="xml"><form><button name="approve" type="object" groups="base.group_user" states="draft"/></form></field></record>
+</odoo>''')
+        self.index.refresh()
+        result = automation_triggers(self.index, model="demo.request")
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["items"][0]["method_calls"]["items"][0]["method"], "approve")
+        self.assertEqual(result["items"][0]["model_relationship"], "unresolved_model_reference")
+        self.assertEqual(result["items"][1]["method_calls"]["items"][0]["method"], "approve")
+        button = next(b for b in object_buttons(self.index, "demo.request")["items"] if b["view"] == "demo.view_conditions")
+        self.assertEqual(button["conditions"]["states"], "draft")
+        view = self.index.trace_view("demo.view_conditions")["views"]["items"][0]
+        self.assertEqual(view["conditions"]["items"][0]["conditions"]["groups"], "base.group_user")
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ except Exception as error:
 
 
 def inspect_access(runtime, model: str, user_id: int, company_ids: list[int] | None, record_ids: list[int],
-                   timeout: int = 30, include_stderr: bool = False) -> dict:
+                   timeout: int = 30, include_stderr: bool = False, include_evidence: bool = False) -> dict:
     program = f'''_user_id = {user_id!r}
 _requested_companies = {company_ids!r}
 _ids = {record_ids!r}
@@ -85,8 +85,46 @@ _result = {{"model": {model!r}, "user_id": _records.env.uid, "superuser_mode": _
            "company_id": _records.env.company.id, "allowed_company_ids": _records.env.companies.ids,
            "acl": _acl, "records": _rules,
            "note": "ACL and record rules are reported separately. Create rules, field access and custom business logic are not evaluated."}}
+if {include_evidence!r}:
+    _access = env["ir.model.access"].sudo().search([("model_id.model", "=", {model!r}), ("active", "=", True)], limit=51)
+    _rules_found = env["ir.rule"].sudo().search([("model_id.model", "=", {model!r}), ("active", "=", True)], limit=51)
+    _group_ids = set(_user.groups_id.ids)
+    _result["evidence"] = {{
+        "acl": [{{"id": a.id, "name": a.name, "group_id": a.group_id.id or None,
+                  "user_group_match": not a.group_id or a.group_id.id in _group_ids,
+                  "operations": {{op: bool(getattr(a, "perm_" + op)) for op in ("read", "create", "write", "unlink")}}}} for a in _access[:50]],
+        "rules": [{{"id": r.id, "name": r.name, "group_ids": r.groups.ids[:50], "groups_truncated": len(r.groups.ids) > 50,
+                    "user_group_match": not r.groups or bool(set(r.groups.ids) & _group_ids),
+                    "domain": (r.domain_force or "")[:2000], "domain_truncated": len(r.domain_force or "") > 2000,
+                    "operations": {{op: bool(getattr(r, "perm_" + op)) for op in ("read", "create", "write", "unlink")}}}} for r in _rules_found[:50]],
+        "acl_truncated": len(_access) > 50, "rules_truncated": len(_rules_found) > 50,
+        "note": "Potentially relevant active records; group matches and listings do not establish why access was granted or denied."}}
 '''
     return execute(runtime, "internal access inspection", timeout=timeout, include_stderr=include_stderr, _program=program)
+
+
+def inspect_runtime_fields(runtime, model, fields, user_id, company_ids, timeout=30, include_stderr=False):
+    program = f'''import odoo.release
+_model = {model!r}
+_names = {fields!r}
+_uid = {user_id!r}
+_companies = {company_ids!r}
+_user = env["res.users"].browse(_uid or env.uid).exists()
+if not _user:
+    raise ValueError("User does not exist")
+_selected = _companies if _companies is not None else [_user.company_id.id]
+if not _selected or any(c not in _user.company_ids.ids for c in _selected):
+    raise ValueError("All requested companies must belong to the user")
+_records = env[_model].with_user(_user.id).with_context({{}}, allowed_company_ids=_selected)
+_attributes = ["type", "string", "help", "required", "readonly", "store", "relation", "selection"]
+_metadata = _records.fields_get(_names, attributes=_attributes)
+_result = {{"model": _model, "database": env.cr.dbname, "odoo_version": odoo.release.version, "user_id": _records.env.uid,
+           "superuser_mode": _records.env.su, "company_id": _records.env.company.id,
+           "allowed_company_ids": _records.env.companies.ids, "fields": _metadata,
+           "not_returned": [name for name in _names if name not in _metadata],
+           "note": "Runtime fields_get metadata in this user context; omitted fields may be missing or inaccessible."}}
+'''
+    return execute(runtime, "internal field inspection", timeout=timeout, include_stderr=include_stderr, _program=program)
 
 
 def observations(source: dict, runtime: dict) -> list[dict]:

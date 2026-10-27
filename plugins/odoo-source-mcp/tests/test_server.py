@@ -108,6 +108,9 @@ class MCPWorkspaceTests(unittest.IsolatedAsyncioTestCase):
                 async with ClientSession(read, write, list_roots_callback=roots) as session:
                     await session.initialize()
                     listed = await session.list_tools()
+                    self.assertTrue({"inspect_runtime_fields", "find_automation_triggers"}.issubset({tool.name for tool in listed.tools}))
+                    response = await session.call_tool("find_automation_triggers", {"workspace": str(base / "one"), "module": "one"})
+                    self.assertFalse(response.isError, response.content)
                     self.assertTrue({"find_state_assignments", "find_object_buttons"}.issubset({tool.name for tool in listed.tools}))
                     for tool, args in (("find_state_assignments", {"model": "one.model"}),
                                        ("find_object_buttons", {"model": "one.model"}),

@@ -9,9 +9,9 @@ from urllib.request import url2pathname
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ClientCapabilities, RootsCapability, ToolAnnotations
 
-from .diagnostics import diagnose_runtime, inspect_access, observations, source_diagnostic
+from .diagnostics import diagnose_runtime, inspect_access, inspect_runtime_fields as runtime_fields, observations, source_diagnostic
 from .index import SourceIndex
-from .inspection import field_behavior, inspect_module as inspect_module_source, method_calls, object_buttons, state_assignments
+from .inspection import automation_triggers, field_behavior, inspect_module as inspect_module_source, method_calls, object_buttons, state_assignments
 from .runtime import inspect_runtime, resolve_runtime
 from .shell import execute
 from .workspace import discover_roots
@@ -97,7 +97,7 @@ async def diagnose_model(model: str, workspace: str | None = None, limit: int = 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
 async def inspect_model_access(model: str, user_id: int, workspace: str | None = None,
                                company_ids: list[int] | None = None, record_ids: list[int] | None = None,
-                               timeout: int = 30, include_stderr: bool = False) -> dict:
+                               timeout: int = 30, include_stderr: bool = False, include_evidence: bool = False) -> dict:
     """Inspect model ACL and selected record rules as a specific user and company context; never mutate records."""
     _validate_model(model)
     if isinstance(user_id, bool) or user_id < 1:
@@ -108,7 +108,34 @@ async def inspect_model_access(model: str, user_id: int, workspace: str | None =
     if company_ids == []:
         raise ValueError("company_ids must not be empty; omit it to use the user's default company")
     runtime = resolve_runtime(await runtime_workspace(workspace))
-    return await asyncio.to_thread(inspect_access, runtime, model, user_id, company_ids, record_ids or [], timeout, include_stderr)
+    return await asyncio.to_thread(inspect_access, runtime, model, user_id, company_ids, record_ids or [], timeout, include_stderr, include_evidence)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
+async def inspect_runtime_fields(model: str, fields: list[str], workspace: str | None = None,
+                                 user_id: int | None = None, company_ids: list[int] | None = None,
+                                 include_source: bool = False, timeout: int = 30, include_stderr: bool = False) -> dict:
+    """Inspect selected effective registry fields in an explicit user/company context."""
+    _validate_model(model)
+    if not fields or len(fields) > 20:
+        raise ValueError("fields must contain 1 to 20 names")
+    for field in fields:
+        _validate_model(field)
+    if user_id is not None and (isinstance(user_id, bool) or user_id < 1):
+        raise ValueError("user_id must be a positive integer")
+    if company_ids is not None and (not company_ids or len(company_ids) > 20 or any(isinstance(i, bool) or i < 1 for i in company_ids)):
+        raise ValueError("company_ids must contain 1 to 20 positive integers")
+    project = await runtime_workspace(workspace)
+    result = await asyncio.to_thread(runtime_fields, resolve_runtime(project), model, fields, user_id, company_ids, timeout, include_stderr)
+    if include_source:
+        try:
+            index = await get_index(str(project))
+            index.refresh()
+            result["source"] = {field: index.field(model, field, 10)["definitions"] for field in fields}
+            result["source_index_error_count"] = len(index.errors)
+        except (ValueError, OSError) as exc:
+            result["source_error"] = str(exc)
+    return result
 
 
 async def get_index(workspace: str | None):
@@ -187,6 +214,21 @@ async def find_models(models: list[str], workspace: str | None = None, limit: in
     return index_result(index, {"results": [{"model": model, **index.model(model, limit)} for model in models],
             "limit_per_model": limit,
             "note": "Static source candidates only; results do not establish installed modules or runtime behavior."})
+
+
+@mcp.tool()
+async def find_automation_triggers(workspace: str | None = None, model: str | None = None,
+                                   module: str | None = None, limit: int = 20, offset: int = 0) -> dict:
+    """Find static scheduled and server action declarations without executing code."""
+    if model is not None:
+        _validate_model(model)
+    if module is not None:
+        _validate_model(module)
+    if not model and not module:
+        raise ValueError("Specify model or module to bound discovery")
+    index = await get_index(workspace)
+    index.refresh()
+    return index_result(index, automation_triggers(index, model, module, limit, offset))
 
 
 @mcp.tool()

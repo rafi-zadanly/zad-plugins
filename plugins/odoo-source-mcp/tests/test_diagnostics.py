@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from odoo_source_mcp.diagnostics import diagnose_runtime, inspect_access, observations, source_diagnostic
+from odoo_source_mcp.diagnostics import diagnose_runtime, inspect_access, inspect_runtime_fields, observations, source_diagnostic
 from odoo_source_mcp.index import SourceIndex
 from odoo_source_mcp.runtime import inspect_runtime, resolve_runtime
 from odoo_source_mcp.shell import execute
@@ -14,6 +14,9 @@ from odoo_source_mcp.shell import execute
 FAKE_DIAGNOSTIC_ODOO = '''import os, sys, types
 assert "default_transaction_read_only=on" in os.environ.get("PGOPTIONS", "")
 odoo = types.ModuleType("odoo")
+odoo.release = types.ModuleType("odoo.release")
+odoo.release.version = "16.0"
+sys.modules["odoo.release"] = odoo.release
 exceptions = types.ModuleType("odoo.exceptions")
 class AccessError(Exception): pass
 class MissingError(Exception): pass
@@ -23,6 +26,7 @@ odoo.exceptions = exceptions
 sys.modules["odoo"] = odoo
 sys.modules["odoo.exceptions"] = exceptions
 class Cursor:
+    dbname = "fixture_db"
     def commit(self): pass
     def rollback(self): pass
 class Companies:
@@ -34,6 +38,7 @@ class User:
         self.id = id
         self.company_id = Company(2)
         self.company_ids = Companies([2, 3])
+        self.groups_id = Companies([5])
     def exists(self): return self if self.id in (1, 7) else None
 class Env:
     def __init__(self, uid=1, companies=None):
@@ -51,8 +56,14 @@ class Env:
 class Access:
     def __init__(self, env): self.env = env
     def check(self, model, operation, raise_exception=False): return self.env.su or operation in ("read", "create")
+    def sudo(self): return self
+    def search(self, domain, limit):
+        return [types.SimpleNamespace(id=1, name="ACL", group_id=Company(5), perm_read=True, perm_create=False, perm_write=False, perm_unlink=False)]
 class Rules:
     def _compute_domain(self, model, operation): return [("operation", "=", operation)]
+    def sudo(self): return self
+    def search(self, domain, limit):
+        return [types.SimpleNamespace(id=2, name="Rule", groups=Companies([5]), domain_force="[]", perm_read=True, perm_create=False, perm_write=False, perm_unlink=False)]
 class Users:
     def browse(self, id): return User(id)
 class Model:
@@ -70,6 +81,7 @@ class Model:
     def exists(self): return Model(self.env, self.name, [i for i in self.ids if i == 11])
     def sudo(self): return self
     def filtered_domain(self, domain): return Model(self.env, self.name, [] if domain and domain[0][2] == "write" else self.ids)
+    def fields_get(self, names, attributes): return {name: {"type": "char", "readonly": False} for name in names if name == "name"}
 env = Env()
 exec(sys.stdin.read())
 env.cr.rollback()
@@ -150,6 +162,21 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(default["result"]["allowed_company_ids"], [2])
         superuser = inspect_access(resolve_runtime(self.root), "present.model", 1, None, [])
         self.assertTrue(superuser["result"]["superuser_mode"])
+
+    def test_runtime_fields_context_and_missing(self):
+        result = inspect_runtime_fields(resolve_runtime(self.root), "present.model", ["name", "missing"], 7, [3])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["result"]["database"], "fixture_db")
+        self.assertEqual(result["result"]["user_id"], 7)
+        self.assertEqual(result["result"]["company_id"], 3)
+        self.assertEqual(result["result"]["not_returned"], ["missing"])
+
+    def test_access_evidence_is_separate_from_checks(self):
+        result = inspect_access(resolve_runtime(self.root), "present.model", 7, [3], [11], include_evidence=True)
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["result"]["acl"]["write"])
+        self.assertEqual(result["result"]["evidence"]["rules"][0]["name"], "Rule")
+        self.assertIn("do not establish why", result["result"]["evidence"]["note"])
 
     def test_config_partial_and_provenance(self):
         (self.root / ".odoo-mcp.toml").write_text('[runtime]\npython = "missing/bin/python"\ndatabase = "toml_db"\n')

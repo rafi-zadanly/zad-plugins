@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import os
 import re
+import textwrap
 import xml.sax
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -70,6 +71,11 @@ def view_selectors(nodes):
             yield {"line": node.line, "tag": node.tag, "attributes": dict(node.attrs)}
 
 
+def ui_conditions(attrs):
+    return {key: value[:1000] for key, value in attrs.items()
+            if key in {"attrs", "states", "groups", "context", "modifiers", "invisible", "readonly", "required"}}
+
+
 def call_name(node):
     if isinstance(node, ast.Name):
         return node.id
@@ -93,6 +99,7 @@ class SourceIndex:
         self.modules = []
         self.source_files = []
         self.buttons = []
+        self.view_conditions = {}
 
     def refresh(self, force=False):
         files = []
@@ -123,6 +130,7 @@ class SourceIndex:
         self.view_specs = {}
         self.modules = []
         self.buttons = []
+        self.view_conditions = {}
         for module, manifest in modules:
             try:
                 data = literal(ast.parse(manifest.read_text(encoding="utf-8")).body[0].value, {})
@@ -206,7 +214,7 @@ class SourceIndex:
                 else:
                     for child in node.children:
                         if child.tag == "field" and child.attrs.get("name"):
-                            value = child.attrs.get("ref") or child.text.strip()
+                            value = child.attrs.get("ref") or (textwrap.dedent(child.text).strip() if child.attrs["name"] == "code" and record["kind"] in {"ir.cron", "ir.actions.server"} else child.text.strip())
                             if not value and child.attrs["name"] in {"priority", "sequence"} and child.attrs.get("eval"):
                                 try:
                                     number = literal(ast.parse(child.attrs["eval"], mode="eval").body)
@@ -227,9 +235,16 @@ class SourceIndex:
                         for child in children:
                             if child.tag == "button" and child.attrs.get("type") == "object" and child.attrs.get("name"):
                                 self.buttons.append({**loc, "line": child.line, "view": record["xml_id"],
-                                                     "view_line": node.line, "method": child.attrs["name"], "nested_field": nested})
+                                                     "view_line": node.line, "method": child.attrs["name"], "nested_field": nested,
+                                                     "conditions": ui_conditions(child.attrs)})
                             button_nodes(child.children, nested or child.tag == "field")
                     button_nodes(selector_nodes)
+                    self.view_conditions[(str(path), node.line)] = [
+                        {"line": child.line, "tag": child.tag, "name": child.attrs.get("name"),
+                         "conditions": ui_conditions(child.attrs) or {child.attrs["name"]: child.text.strip()[:1000]}}
+                        for arch in arches for child in descendants(arch) if ui_conditions(child.attrs) or
+                        (child.tag == "attribute" and child.attrs.get("name") in
+                         {"attrs", "states", "groups", "context", "modifiers", "invisible", "readonly", "required"})]
                     if record["fields"].get("inherit_id"):
                         self.view_specs[(str(path), node.line)] = list(view_selectors(selector_nodes))
                     for child in descendants(node):
@@ -367,6 +382,7 @@ class SourceIndex:
                 xpaths = self.limit(self.view_xpaths.get((view["path"], view["line"]), []), limit)
                 selectors = self.limit(self.view_specs.get((view["path"], view["line"]), []), limit)
                 records.append({**view, "xpaths": xpaths, "selectors": selectors})
+                records[-1]["conditions"] = self.limit(self.view_conditions.get((view["path"], view["line"]), []), limit)
                 parent = qualified(view["module"], view["fields"].get("inherit_id"))
                 if parent:
                     edges.append({"view": current, "parent": parent, "module": view["module"],

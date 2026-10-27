@@ -127,6 +127,32 @@ def method_calls(index, model, method, limit=20, caller_offset=0, callee_offset=
     if min(caller_offset, callee_offset) < 0:
         raise ValueError("offsets must be non-negative")
     callers, callees, issues = [], [], []
+    def relation(cls, receiver):
+        if not (isinstance(receiver, ast.Attribute) and isinstance(receiver.value, ast.Name) and receiver.value.id == "self"):
+            return None
+        owners, pending = set(cls["models"]), list(cls["models"])
+        while pending and len(owners) < 100:
+            current = pending.pop(0)
+            for ancestor in index.classes:
+                if current in ancestor["models"]:
+                    for parent in ancestor["inherit"]:
+                        if parent not in owners:
+                            owners.add(parent)
+                            pending.append(parent)
+        evidence = [{"model": owner, "field": field["name"], "type": field["type"],
+                     "comodel": field["comodel"], "path": candidate["path"], "line": field["line"]}
+                    for candidate in index.classes for owner in candidate["models"] if owner in owners
+                    for field in candidate["fields"] if field["name"] == receiver.attr
+                    and field["type"] in {"Many2one", "One2many", "Many2many"}]
+        if not evidence:
+            return None
+        targets = sorted({e["comodel"] for e in evidence if isinstance(e["comodel"], str)})
+        ambiguous = bool(pending) or len(targets) != 1 or any(not isinstance(e["comodel"], str) for e in evidence)
+        return {"target_model": targets[0] if not ambiguous else None, "target_candidates": targets[:limit],
+                "requested_model_candidate": model in targets,
+                "target_candidates_truncated": len(targets) > limit, "field_declarations": index.limit(evidence, limit),
+                "ancestor_traversal_truncated": bool(pending),
+                "relationship": "ambiguous_relational_field" if ambiguous else "inferred_relational_field"}
     for cls, node in _class_nodes(index, model, issues):
         for stmt in node.body:
             if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -147,9 +173,13 @@ def method_calls(index, model, method, limit=20, caller_offset=0, callee_offset=
                 item = {"path": cls["path"], "line": call.lineno, "class": cls["class"], "caller": stmt.name,
                         "method": func.attr, "receiver": ast.unparse(receiver)[:160], "target_model": target_model,
                         "relationship": kind}
+                inferred = relation(cls, receiver)
+                if inferred:
+                    item.update(inferred)
+                    target_model = item["target_model"]
                 if stmt.name == method:
                     callees.append(item)
-                if func.attr == method and target_model == model:
+                if func.attr == method and (target_model == model or (inferred and inferred["requested_model_candidate"])):
                     callers.append(item)
     scoped = []
     if caller_module or caller_folder:
@@ -171,11 +201,15 @@ def method_calls(index, model, method, limit=20, caller_offset=0, callee_offset=
                         continue
                     receiver = call.func.value
                     target = literal(receiver.slice) if isinstance(receiver, ast.Subscript) and call_name(receiver.value) == "self.env" else None
-                    if target == model:
-                        callers.append({"path": cls["path"], "line": call.lineno, "class": cls["class"],
+                    inferred = relation(cls, receiver)
+                    if target == model or (inferred and inferred["requested_model_candidate"]):
+                        item = {"path": cls["path"], "line": call.lineno, "class": cls["class"],
                                         "caller": stmt.name, "caller_models": cls["models"], "method": method,
                                         "receiver": ast.unparse(receiver)[:160], "target_model": model,
-                                        "relationship": "explicit_env_model_syntax"})
+                                        "relationship": "explicit_env_model_syntax"}
+                        if inferred:
+                            item.update(inferred)
+                        callers.append(item)
     def page(items, offset):
         return {"total": len(items), "items": items[offset:offset + limit], "truncated": len(items) > limit,
                 "offset": offset, "limit": limit, "next_offset": offset + limit if offset + limit < len(items) else None}
@@ -183,7 +217,42 @@ def method_calls(index, model, method, limit=20, caller_offset=0, callee_offset=
             "classes_truncated": sum(model in c["models"] for c in index.classes) > 100,
             "scoped_classes_total": len(scoped), "scoped_classes_truncated": len(scoped) > 100,
             "inspection_issues": index.limit(issues, limit),
-            "note": "Cross-model callers require a scope and only explicit self.env['model'].method() syntax is matched. Runtime dispatch, chained and dynamic receivers remain unresolved."}
+            "note": "Cross-model callers require a scope. Relational field targets are static inferences and can be ambiguous; inherited fields, runtime dispatch, chained and dynamic receivers may be unresolved."}
+
+
+def automation_triggers(index, model=None, module=None, limit=20, offset=0):
+    limit = max(1, min(limit, 50))
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
+    model_ids = {r["xml_id"]: r["fields"].get("model") for r in index.records if r["kind"] == "ir.model"}
+    items = []
+    for record in index.records:
+        if record["kind"] not in {"ir.cron", "ir.actions.server"} or (module and record["module"] != module):
+            continue
+        fields = record["fields"]
+        ref = qualified(record["module"], fields.get("model_id"))
+        target = model_ids.get(ref)
+        # Standard generated model XML IDs are candidates, not verified model names.
+        candidate = "model_" + model.replace(".", "_") if model else None
+        if model and target != model and not (ref and ref.rsplit(".", 1)[-1] == candidate):
+            continue
+        code = fields.get("code", "")
+        calls = []
+        try:
+            tree = ast.parse(code) if code else None
+            if tree:
+                calls = [{"method": n.func.attr, "receiver": ast.unparse(n.func.value)[:160],
+                          "code_line": n.lineno} for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+        except SyntaxError:
+            pass
+        items.append({"kind": record["kind"], "xml_id": record["xml_id"], "module": record["module"],
+                      "path": record["path"], "line": record["line"], "model_reference": ref,
+                      "model": target, "model_relationship": "declared_ir_model" if target else "unresolved_model_reference",
+                      "method_calls": index.limit(calls, limit), "code_present": bool(code),
+                      "unresolved": not target or bool(code and not calls)})
+    return {"total": len(items), "items": items[offset:offset + limit], "offset": offset, "limit": limit,
+            "next_offset": offset + limit if offset + limit < len(items) else None,
+            "note": "Static declarations and code syntax only; model XML ID matching is a candidate, dynamic actions and runtime scheduling are unresolved. Code is never executed."}
 
 
 def state_assignments(index, model, field="state", method=None, limit=20, offset=0):
@@ -236,7 +305,7 @@ def state_assignments(index, model, field="state", method=None, limit=20, offset
             "offset": offset, "limit": limit, "next_offset": offset + limit if offset + limit < len(items) else None,
             "classes_truncated": sum(model in c["models"] for c in index.classes) > 100, "inspection_issues": index.limit(issues, limit),
             "unresolved_writes": index.limit(unresolved_writes, limit),
-            "note": "Syntax evidence only, not a runtime transition. Other receivers, dynamic dictionaries, aliases and control flow are unresolved or omitted."}
+            "note": "Syntax evidence in classes of the requested model only, not a runtime transition. A model label identifies the enclosing class, not necessarily the receiver's model. Other receivers, dynamic dictionaries, aliases and control flow are unresolved or omitted."}
 
 
 def _method_nodes(statements):
