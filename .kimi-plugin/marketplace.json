@@ -1,0 +1,10 @@
+{
+  "version": "2",
+  "plugins": [
+    {
+      "id": "odoo-source-mcp",
+      "displayName": "Odoo Source MCP",
+      "source": "https://github.com/rafi-zadanly/zad-plugins/tree/main/plugins/odoo-source-mcp"
+    }
+  ]
+}
