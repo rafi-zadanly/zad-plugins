@@ -1,6 +1,6 @@
 # Zad Plugins
 
-This repository is a plugin marketplace for Codex and Claude Code.
+This repository provides plugin marketplace catalogs for Codex, Claude Code, and Cursor. Its MCP servers can also be configured directly in other MCP clients.
 
 ## Plugins
 
@@ -13,12 +13,15 @@ This repository is a plugin marketplace for Codex and Claude Code.
 ```text
 .agents/plugins/marketplace.json  Codex marketplace catalog
 .claude-plugin/marketplace.json   Claude Code marketplace catalog
+.cursor-plugin/marketplace.json   Cursor marketplace catalog
 plugins/
   odoo-source-mcp/               Odoo Source Explorer plugin
     README.md                    Plugin documentation
     plugin.json                  Codex plugin metadata
     mcp.json                     Codex MCP server configuration
     .claude-plugin/plugin.json   Claude Code plugin metadata and MCP server
+    .cursor-plugin/plugin.json   Cursor plugin metadata and MCP server
+    .kimi-plugin/plugin.json     Kimi Code plugin metadata and MCP server
     skills/odoo-source-mcp/      Bundled skill
     src/odoo_source_mcp/         MCP server implementation
     tests/                       Plugin tests
@@ -26,7 +29,24 @@ plugins/
     uv.lock                      Locked dependencies
 ```
 
-Add each new plugin under `plugins/<plugin-name>/` and register it in both marketplace catalogs. Put skills belonging to a plugin in that plugin's `skills/` directory.
+Add each new plugin under `plugins/<plugin-name>/` and register it in the marketplace catalogs for clients it supports. Put skills belonging to a plugin in that plugin's `skills/` directory.
+
+## Client support
+
+| Client | Installation | Bundled skill |
+| --- | --- | --- |
+| Codex | Marketplace plugin | Included in plugin |
+| Claude Code | Marketplace plugin | Included in plugin |
+| Cursor | Cursor marketplace catalog; direct MCP configuration also available | Included in plugin; direct MCP registration does not install it |
+| Kimi Code | Local plugin installation | Declared in plugin |
+| Kiro | Portable Agent Plugins power | Included in package |
+| Cline | Portable Agent Plugins on supported Hub clients, or direct MCP configuration | Included in portable package; direct registration does not install it |
+| OMP | Claude-compatible marketplace fallback, or direct MCP configuration | Included in portable package |
+| VS Code / GitHub Copilot | Configure the MCP server directly | Not installed by MCP registration |
+
+See the [Odoo plugin's client setup](plugins/odoo-source-mcp/README.md#other-mcp-clients) for configuration paths, prerequisites, and examples. Client support for MCP does not imply support for this repository's marketplace or plugin skill. Direct configurations require a local checkout and `uv`; they do not install the server from the marketplace.
+
+Cursor's catalog and plugin manifest follow its [plugin reference](https://cursor.com/docs/reference/plugins); Cursor uses `CURSOR_PLUGIN_ROOT` rather than the portable manifest's `PLUGIN_ROOT`. Local or team marketplace availability depends on the Cursor account and settings; this package has not been submitted to the public Cursor Marketplace or tested in Cursor.
 
 ## Install in Codex
 

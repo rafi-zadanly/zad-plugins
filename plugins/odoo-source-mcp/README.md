@@ -72,6 +72,52 @@ Use `find_automation_triggers` with a `model` or `module` filter to find indexed
 
 `find_object_buttons` includes declared UI condition attributes, and `trace_view` includes bounded condition evidence from indexed view XML. These attributes are raw source syntax; inheritance selectors, user groups, context and runtime modifiers can change the effective view. They do not prove visibility or access.
 
+## Other MCP clients
+
+Codex and Claude Code can install this package from the marketplace; see the [repository installation guide](../../README.md). The repository also contains a Cursor marketplace catalog and a Cursor-specific plugin manifest, including its own MCP launcher. Cursor plugin installation has not been integration-tested and marketplace availability depends on account settings. Clients can also run the same MCP server directly from a local checkout. Direct MCP registration provides the tools, but does not automatically install the bundled skill or its guidance. Compatibility with each client version and its skill-loading behavior has not been integration-tested here.
+
+Additional plugin formats:
+
+- **Kimi Code:** clone this repository and run `/plugins install /absolute/path/to/zad-plugins/plugins/odoo-source-mcp` in Kimi Code, then `/reload` or start a new session. The Kimi manifest declares the skill and MCP server; Kimi copies the plugin on install, so reinstall after updating the checkout. Installations are user-wide. See [Kimi Code plugins](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/plugins.md).
+- **Kiro:** the existing portable `plugin.json`, `mcp.json`, and `skills/` form a Power, with Odoo-specific activation keywords. In Kiro CLI v3, install the local plugin directory with `kiro-cli powers install /absolute/path/to/zad-plugins/plugins/odoo-source-mcp`. See [creating](https://kiro.dev/docs/powers/create/) and [installing](https://kiro.dev/docs/powers/installation/) Powers.
+- **Cline:** supported Hub-backed Cline clients discover portable Agent Plugins under `~/.agents/plugins/*`; the repository's plugin directory is an Agent Plugins package, not a Cline TypeScript plugin. Workspace `.agents/plugins` directories are not automatically scanned. Refer to [Cline's portable plugin documentation](https://github.com/cline/cline/blob/main/sdk/README.md#portable-agent-plugins) for supported clients and discovery; direct MCP setup below remains an alternative.
+- **OMP:** its marketplace can fall back to this repository's `.claude-plugin/marketplace.json` and discover portable Agent Plugins. Use `omp plugin marketplace add rafi-zadanly/zad-plugins`, then `omp plugin install odoo-source-mcp@zad-plugins`; select project scope if desired. See the [OMP marketplace reference](https://github.com/can1357/oh-my-pi/blob/main/docs/marketplace.md). Do not register the same server twice.
+
+These plugin paths are based on client documentation and have not been tested in those clients. Plugin installation does not replace the Odoo project runtime configuration described below.
+
+First install [uv](https://docs.astral.sh/uv/) and clone this repository. Use the absolute path to the plugin directory in the following example, replacing `/absolute/path/to/zad-plugins`. `uv` creates the plugin's environment and installs locked dependencies on first launch; that launch may need network access. The checkout must remain available. Update it with Git when you want newer plugin code; reload or restart the client afterward.
+
+For Cursor, add this entry under `mcpServers` in the Odoo project's `.cursor/mcp.json` or in `~/.cursor/mcp.json`. For Cline, open its MCP configuration from the extension's **MCP Servers → Configure** screen and add the same entry under `mcpServers`; Cline CLI uses its own settings file. Merge with existing entries rather than replacing them:
+
+```json
+{
+  "mcpServers": {
+    "odoo-source-mcp": {
+      "command": "uv",
+      "args": ["run", "--locked", "--project", "/absolute/path/to/zad-plugins/plugins/odoo-source-mcp", "odoo-source-mcp"]
+    }
+  }
+}
+```
+
+For VS Code, use the portable `mcpServers` example above in the Odoo workspace root's `.mcp.json` or Copilot user configuration. Alternatively, `.vscode/mcp.json` uses a different top-level key and requires the server type:
+
+```json
+{
+  "servers": {
+    "odoo-source-mcp": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--locked", "--project", "/absolute/path/to/zad-plugins/plugins/odoo-source-mcp", "odoo-source-mcp"]
+    }
+  }
+}
+```
+
+Choose one registration for a client to avoid duplicate servers. The plugin also uses the Agent Plugins package format; compatible plugin clients may support its skill and MCP configuration, but their marketplace installation and local executor behavior must be verified in the actual client. See [Cursor MCP setup](https://docs.cursor.com/context/model-context-protocol), [Cline MCP configuration](https://github.com/cline/cline/blob/main/docs/mcp/mcp-overview.mdx), and [VS Code MCP configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration).
+
+Open the Odoo project in the client and ask the agent to pass its absolute project path as `workspace` to each tool. If the client does not expose MCP roots, tools without an explicit workspace need `ODOO_SOURCE_ROOT` in the server environment. Odoo shell operations additionally require the project runtime setup below; the MCP's Python environment is separate from Odoo's.
+
 ## Odoo shell setup
 
 The source tools need no runtime configuration. For shell access, create `.odoo-mcp.toml` at your Odoo project root; see the complete [example](.odoo-mcp.toml.example):

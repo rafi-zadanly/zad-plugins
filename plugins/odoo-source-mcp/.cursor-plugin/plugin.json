@@ -1,0 +1,12 @@
+{
+  "name": "odoo-source-mcp",
+  "version": "0.5.3",
+  "description": "Navigate Odoo addon source and inspect a configured Odoo runtime.",
+  "mcpServers": {
+    "odoo-source-mcp": {
+      "command": "uv",
+      "args": ["run", "--locked", "--project", "${CURSOR_PLUGIN_ROOT}", "odoo-source-mcp"],
+      "cwd": "${CURSOR_PLUGIN_ROOT}"
+    }
+  }
+}
